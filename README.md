@@ -1,0 +1,2 @@
+# softcoreA
+softcore for ForwardCom
