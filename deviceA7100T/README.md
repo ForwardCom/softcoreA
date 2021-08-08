@@ -2,7 +2,7 @@
 
 Device specific files for implementing a ForwardCom softcore in Nexys A7 FPGA board with Xilinx Artix 7 100T FPGA.
 
-See the [manual](https://github.com/ForwardCom/softcoreA/raw/main/softcore_A.pdf) for details.
+See the [softcore manual](https://github.com/ForwardCom/softcoreA/raw/main/manual/softcore_A.pdf) for details.
 
 ##
 
