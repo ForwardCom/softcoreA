@@ -1,7 +1,7 @@
 # softcoreA
 This is a softcore for implementing a ForwardCom CPU in an FPGA.
 
-See the [manual](https://github.com/ForwardCom/softcoreA/raw/main/softcore_A.pdf) for details.
+See the [manual](https://github.com/ForwardCom/softcoreA/raw/main/manual/softcore_A.pdf) for details.
 
 ##
 
