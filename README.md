@@ -13,6 +13,4 @@ softcore_A.pdf  |  manual and documentation for the softcore
 softcore_A.tex  |  Latex source for the manual
 license.pdf  |   CERN open hardware license W version 2
 deviceA7100T  |  Subfolder containing device-specific files for Nexys A7 FPGA board
-
-
-
+manual  |  Subfolder containing softcore manual
