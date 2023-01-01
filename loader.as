@@ -1,16 +1,19 @@
-﻿/****************************  loader.as  ********************************
+﻿/****************************  loader.as  *************************************
 * Author:        Agner Fog
 * date created:  2020-12-04
-* Last modified: 2021-07-30
-* Version:       1.11
+* Last modified: 2022-12-20
+* Version:       1.12
 * Project:       Loader for ForwardCom soft core
 * Language:      ForwardCom assembly
 * Description:
 * This loader is designed to run in a ForwardCom processor to load an 
 * executable file into code and data RAM before running the loaded program.
 *
-* Copyright 2020-2021 GNU General Public License v.3 http://www.gnu.org/licenses
-******************************************************************************
+* IMPORTANT: Remember to set MAX_LOADER_SIZE in the config..vh files whenever
+* the loader code is modified. Must be bigger than the size of this code.
+
+* Copyright 2020-2022 GNU General Public License v.3 http://www.gnu.org/licenses
+*******************************************************************************
 
 Prerequisites:
 The executable file to be loaded is structured as defined in the ForwardCom 
@@ -194,7 +197,20 @@ do { // repeat until no more serial input coming
 }
 while (int16 r2 != 0)
 
-// clear registers
+// clear all registers except sp
+int   r0 = 0
+int   r1 = 0
+int   r2 = 0
+int   r3 = 0
+int32 push(r0, 3)                                // push 4 registers, 32 bits
+int8  pop(r4, 19)                                // pop 16 registers, 8 bits
+int64 sp -= 10
+int8  pop(r20, 29)                               // pop 10 more registers, 8 bits
+
+int r30 = read_perf(perf0, -1)                   // clear all performance counters
+int r30 = 0
+
+/* alternative if push/pop with multiple registers not supported
 int r0 = 0
 int r1 = 0
 int r2 = 0
@@ -227,10 +243,9 @@ int r28 = 0
 int r29 = 0
 int r30 = read_perf(perf0, -1)                   // clear all performance counters
 int r30 = 0
+*/
 
 // breakpoint
-
-// To do: clear r0 - r30 using POP instruction if supported
 
 set_entry_point:
 jump LOADER                                      // this will be replaced by 24-bit relative call to program entry
@@ -262,8 +277,6 @@ int8 r3 = input(r0, serial_input_port)           // read fourth byte
 if (int8+ r3 != 'F')  {jump read_restart}
 
 // Store file header in memory at address 0
-//int64 r1 = ram_start_address                   // Store file header in memory at address 0 
-//int32 [r1] = ELFMAG                            // store first word (superfluous. will not be used)
 int r1 = 4                                       // we have read 4 bytes
 
 // read_block function input: 
@@ -291,11 +304,12 @@ int r1 &= -8
 int r20 = r1                                     // save address of first program header
 int16 r21 = [r10 + e_phnum]                      // number of program headers
 int16 r12 = [r10 + e_phentsize]                  // size of each program header
-// int r0 = r21 * r12                            // size of all program headers
+int32 r0 = r21 * r12                             // size of all program headers
+/*  // multiplication loop in case CPU does not support multiplication:
 int r0 = 0
-for (int+ r14 = 0; r14 < r21; r14++) {           // multiplication loop in case CPU does not support multiplication
+for (int+ r14 = 0; r14 < r21; r14++) { 
     int16 r0 += r12
-}
+}*/
 int r11 += r0                                    // count number of bytes read
 call read_block                                  // read all program headers
 
@@ -314,6 +328,8 @@ int r24 = read_capabilities(capab5, 0)           // get data cache size = start 
 int r27 = read_capabilities(capab4, 0)           // get code cache size = max size of code section
 int64 r4 = [r6 + p_vaddr]                        // virtual address of first code section relative to first IP section
 int64 r23 = r24 - r4                             // start address of const data (ip-addressed)
+int r29 = address([_loader])                     // start address of loader = limit for code and const
+
 
 // load binary data
 
@@ -332,6 +348,11 @@ for (int+ r14 = 0; r14 < r21; r14++) {           // loop through program headers
     int32 r0 += 3                                // round up to nearest multiple of 4
     int32 r0 &= -4
     int r11 += r0                                // count number of bytes read
+    
+    int r30 = 0x20                               // error code
+    int r8 = r1 + r0
+    if (uint32 r8 > r29) {jump ERROR2}           // Error E2: out of code memory    
+    
     call read_block                              // read const data section
     int r6 += r12                                // next program header
 }
@@ -350,13 +371,16 @@ for (int ; r14 < r21; r14++) {                   // continue loop through progra
     int32 r0 += 3                                // round up to nearest multiple of 4
     int32 r0 &= -4
     int r11 += r0                                // count number of bytes read
+    
+    int r30 = 0x21                               // error code
+    int r8 = r1 + r0
+    if (uint32 r8 > r29) {jump ERROR2}           // Error E2: out of code memory    
+    
     call read_block                              // read code section
     int r6 += r12                                // next program header
 }
 
-int r30 = 1                                      // error code
-int r29 = address([_loader])
-if (uint32 r1 > r29) {jump ERROR}                // out of code memory
+//if (uint32 r1 > r29) {jump ERROR2}               // Error E2: out of code memory
 
 // 3. datap sections
 // align first data section
@@ -385,6 +409,12 @@ for (int ; r14 < r21; r14++) {                   // continue loop through progra
     int32 r0 += 3                                // round up to nearest multiple of 4
     int32 r0 &= -4
     int r11 += r0                                // count number of bytes read. will be zero for BSS section
+    
+    int r30 = 0x30                               // error code
+    //int r8 = r1 + r0
+    //if (uint32 r8 > r29) {jump ERROR3}           // Error E3: out of RAM memory
+    if (uint32 r27 > r29) {jump ERROR3}           // Error E3: out of RAM memory
+    
     call read_block                              // read code section
     int r6 += r12                                // next program header
     int r26 = r1                                 // end of initialized data section
@@ -414,8 +444,8 @@ if (int r7 >= r6) {                              // check if there is any thread
     int64 r25 = r25 & r5                         // aligned start address of first threadp section
 }
 
-int r30 = 2                                      // error code
-if (uint32 r25 <= r27) {jump ERROR}              // out of RAM memory
+int r30 = 0x31                                   // error code
+if (uint32 r25 <= r26) {jump ERROR3}             // Error E3: out of RAM memory
 // r22 contains the amount or RAM used for headers during loading. 
 // This is included in the memory count above, but will be freed before the loaded program is run.
 // This freed memory will be available for data stack or heap
@@ -481,10 +511,22 @@ jump RESTART
 _loader end
 
 
-// Error if out of memory or if input file sections are not in desired order
+// *** Error exits: ***
+
+ERROR1:  // error in .ex file
+undef(r1, r2)                          // illegal instruction to generate E1 error
+jump ERROR
+
+ERROR2:                                // Code size too big
+int r1 = sign_extend_add(r1,r1), options=-1 //  wrong operands to generate E2 error
+jump ERROR
+
+ERROR3:
+int r1 = [r10+r30*4], limit=0          // index out of bounds to generate E3 error
+
 ERROR:
 breakpoint
-int r0 = r30                                     // show error code in debugger
+int r30 = r30                          // show error code in debugger
 jump ERROR
 
 
@@ -493,11 +535,10 @@ jump ERROR
 // r0: number of bytes to read. must be divisible by 4
 // r1: pointer to memory block to write to. must be aligned by 4
 // return:
-// r0: last word read
 // r1: end of memory block
 read_block function 
     int r30 = 0x10                               // error code
-    if (int32 r0 < 0) {jump ERROR}               // check if negative
+    if (int32 r0 < 0) {jump ERROR1}              // check if negative. Error E1, .ex file corrupted
     int64 r2 = r1 + r0                           // end of memory block
     for (uint64 ; r1 < r2; r1 += 4) {            // loop n/4 times
         do {                                     // wait until there are at least 4 bytes in input buffer
@@ -521,20 +562,15 @@ read_block end
 // Function to read a block of data and discard it
 // input: 
 // r0: number of bytes to read
-// return:
-// r0: last byte read
 read_dummy function 
     int r30 = 0x11                               // error code
-    if (int32 r0 < 0) {jump ERROR}               // check if negative
+    if (int32 r0 < 0) {jump ERROR1}              // check if negative. Error E1, .ex file corrupted
     for (uint64 ; r0 > 0; r0--) {                // loop n times
         do {
             int16 r3 = input(r0, serial_input_port) // read one byte. r0 is dummy
         } while (int16+ !(r3 & 0x100))           // repeat if data not ready
     }
-    //int8 r0 = r3                               // return last byte read
     return
 read_dummy end
-
-nop
 
 code end
