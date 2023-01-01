@@ -49,24 +49,24 @@ A full description and definition is found in the manual
 \href{https://github.com/ForwardCom/manual/raw/master/forwardcom.pdf}{ForwardCom: An open-standard instruction set for high-performance microprocessors}.
 \vv
 
-The present document describes the softcore model A version 1.00 
+The present document describes the softcore model A 
 for implementing a ForwardCom CPU in a Xilinx Artix-7 FPGA.
 \vv
 
-\subsection{Features of model A version 1.00}
+\subsection{Features of model A version 1.01}
 \begin{itemize}
 \item Runs on Nexys A7-100T FPGA board
 \item Maximum clock frequency 50 - 70 MHz, depending on configuration
 \item 32-bit or 64-bit registers
 \item Can execute one instruction per clock cycle
 \item Data memory 32 kB. Code memory 64 kB. Call stack 1023 entries.
-\item Implements all integer instructions, except multiplication, division, push, pop
-\item Implements all instruction formats and all addressing modes defined by the ForwardCom standard version 1.11.
+\item Implements all integer instructions, including advanced and complex instructions
+\item Implements all instruction formats and all addressing modes defined by the ForwardCom standard version 1.12.
 \item No vector registers. No floating point instructions
 \item No system calls, no memory protection. Useful for embedded designs
 \item Memory reads and writes must be aligned
 \item RS232 serial interface for standard input and output
-\item On-chip loader (uses 2 kB code memory)
+\item On-chip loader (uses 1 kB code memory)
 \item On-chip debug interface
 \item On-chip event counter
 \item Code examples and test suite provided
@@ -78,7 +78,7 @@ for implementing a ForwardCom CPU in a Xilinx Artix-7 FPGA.
 \item FPGA board Digilent Nexys A7 100T or Nexys 4
 \item Xilinx Vivado tools version 2020.1
 \item ForwardCom softcore
-\item ForwardCom binary tools "forw" version 1.11 or later
+\item ForwardCom binary tools "forw" version 1.12 or later
 \item Serial terminal program, such as RealTerm or Tera Term
 \item Windows or Linux PC
 \end{itemize}
@@ -101,15 +101,17 @@ Device-specific files for The Nexys A7-100T FPGA board are provided in
 \item In Vivado Hardware Manager, click Open target -> Auto Connect. (If connection fails, restart the computer and use a different USB port).
 \item Click Program device, and select the file \{my directory\}/A1/A1.runs/impl\_1/top.bit \\
 You will see numbers on the display
-\item Now you can upload a program to the soft core CPU. Choose hello.ex as a start. Upload this file in binary mode to the virtual serial port that corresponds to the USB port. Use 57600 Baud, 8 data bits, 1 stop bit, no parity, no flow control. See below how to do this with a terminal program:
+\item Now you can upload a program to the soft core CPU. Choose hello.ex as a start. Upload this file in binary mode to the virtual serial port that corresponds to the USB port. Use 230400 Baud, 8 data bits, 1 stop bit, no parity, no flow control. 
+The BAUD rate can be changed in the file configXXX.vh. 
+The following describes how to do the uploading with a terminal program:
 \item If you are using RealTerm: \\ 
 Open RealTerm. On the Display tab, choose Display as All Chars, newLine mode. \\ 
-On the Port tab, set Baud = 57600. In the Port field, find the port number that corresponds to the USB connection. In my case, it shows 4=VCP0, but it may have a different number on your computer. The number may change if you use a different USB port. Press the Open button twice to close the connection and open again. Look at the Status to the right and make sure it is not Closed.\\
+On the Port tab, set Baud = 230400. In the Port field, find the port number that corresponds to the USB connection. In my case, it shows 4=VCP0, but it may have a different number on your computer. The number may change if you use a different USB port. Press the Open button twice to close the connection and open again. Look at the Status to the right and make sure it is not Closed.\\
 Go to the Send tab. Set checkmarks in "+LF" in the first two lines. Set delays to 0. Under "Dump file to port", find the file you want to upload (hello.ex) and press Send. (If you want to upload again, press the "cpu reset" button on the FPGA board to activate the loader).\\
 Press the Up button on the FPGA board if the program asks you to press Run. The hello.ex program writes a welcoming text on the terminal.
 \item If you are using Tera Term: \\ 
 On New Connection, click Serial. In the Port window, choose USB Serial Port. \\
-Click on the Setup menu -> Serial Port. Set speed = 57600, and click New Setting\\
+Click on the Setup menu -> Serial Port. Set speed = 230400, and click New Setting\\
 In the File menu -> Send file. Set Option = Binary. Open the file hello.ex \\
 Press the Up button on the FPGA board to start the program. You should see a Hello text on the terminal.
 \item If you are using Linux: \\ 
@@ -154,6 +156,9 @@ The following test programs work on the softcore model A:
 \item tests\_bool\_bit.ex: Test all boolean and bit manipulation instructions
 \item tests\_branch.ex: Test all jump, call, and branch instructions
 \item test\_formats.ex: Test all instruction formats
+\item test\_pipeline\_stalls.as: Test synchronization and stalls in pipeline
+\item test\_muldiv.as: Test multiplication and division
+\item testpushpop.as: Test push and pop instructions
 \end{itemize}
 \vv
 
@@ -162,7 +167,7 @@ The 32-bit version of the softcore obviously fails the tests on 64-bit operands.
 
 
 \chapter{User interface}
-The FPGA board is connected to a PC through a USB cable. Standard input and output are provided as an RS232 serial connection tunneled through the USB cable with an FTDI driver installed on the PC. A terminal program running on the PC may be used for user input and output. The transmission parameters are 57600 Baud, 8 data bits, 1 stop bit, no parity, no flow control, 
+The FPGA board is connected to a PC through a USB cable. Standard input and output are provided as an RS232 serial connection tunneled through the USB cable with an FTDI driver installed on the PC. A terminal program running on the PC may be used for user input and output. The transmission parameters are 230400 Baud, 8 data bits, 1 stop bit, no parity, no flow control, 
 \textbackslash{LF} as line feed. The Baud rate can be changed by modifying a configuration file (see page \pageref{SettingConfiguration}) and rebuilding the hardware code.
 \vv
 
@@ -306,17 +311,18 @@ The LED display on the FPGA board can show any internal signal in the CPU during
 \vv
 
 Switch number 7-4 are selecting which pipeline stage or unit to show, and switch 3-0 are selecting which signal from this stage or unit to show. 
-For example, if you set switch 7-0 to 0101 1000, you can see the output value from the ALU.
+For example, if you set switch 7-0 to 01110000, you can see the pipeline synchronization signals.
 \vv
 
 All the possible signals to view are defined in the file debugger.vh. 
-You may modify the file debugger.vh to show any signal that is not already defined and assigned to a switch combination.
+You may modify the file debugger.vh to show any signal that is not already defined and assigned to a switch combination. Some signals are commented out in order to economize wiring resources.
 \vv
 
 All pipeline stages and units have registers (D-flip flops) at the output, showing the values after one clock pulse. If you want to see an internal signal that is not output through a register from the unit in question, then it is recommended to output this signal through a register before sending it to the debug display. This makes sure that signals are properly synchronized so that you do not see signals that belong to different clock periods at the same time on the display (which can be very confusing). See the output debug1\_out in the file decoder.sv for an example of how to do this.
 \vv
 
-The LED display can also show register values. Set switch 8 high and set switch 0-5 to the register number as a binary value. The LED display will show the lower 28 bits of the register as a hexadecimal value on the lower seven LED display digits. The leftmost LED display digit will show 8 if the register value is not known but waiting for a value to be calculated by the ALU. The two rightmost digits show the tag of the instruction that will provide the value in this case.
+The LED display can also show register values. Set switch 8 high and set switch 0-5 to the register number as a binary value. The LED display will show the lower 32 bits of the register as a hexadecimal value on the eight LED display digits. 
+Only two digits are shown if the register value is not known but waiting for a value to be calculated by the ALU. The two digits show the tag of the instruction that will provide the value in this case.
 \vv
 
 \section{External LCD display}
@@ -335,7 +341,7 @@ The LCD display has eight lines (four on each LCD unit). The eight lines show th
 4  & A & Address generation stage instruction \\ \hline
 5  & d & Data read stage instruction \\ \hline
 6  & X & Execute (ALU) stage instruction \\ \hline
-7  & : & ALU inputs \\ \hline
+7  & : & ALU inputs or mul/div result \\ \hline
 8  & = & ALU result \\ \hline
 \end{tabular}
 \vv
@@ -346,19 +352,22 @@ Each pipeline stage is represented by a line showing the code address (lower 16 
 The operand type is coded with one letter as follows: b=int8, h=int16, w=int32, d=int64, q=int128, F=float32, D=float64, Q=float128.
 \vv
 
-Line 7, indicated as ":", shows three hexadecimal numbers representing the lower 16 bits of the values of up to three input operands of the current instruction. The first field shows the first operand of 3-operand instructions, or a fallback value for instructions with less than 3 operands. The second field shows the second operand of 3-operand instructions or the first operand of 2-operand instructions. The third field shows the last operand.
+Line 7, indicated as ':', shows three hexadecimal numbers representing the lower 16 bits of the values of up to three input operands of the current instruction. The first field shows the first operand of 3-operand instructions, or a fallback value for instructions with less than 3 operands. The second field shows the second operand of 3-operand instructions or the first operand of 2-operand instructions. The third field shows the last operand.
 \vv
 
-Line 8, indicated as "=", shows the result of the current instruction as a hexadecimal number (32 bits). "m1" indicates a mask bit of 1. "m0" indicates a mask bit of 0, giving a fallback value. The result of conditional and indirect jump instructions are indicated as "jump" or "no jump".
+Line 8, indicated with '=', shows the result of the current instruction as a hexadecimal number (32 bits). 'm0' indicates a mask bit of 0, giving a fallback value. The result of conditional and indirect jump instructions are indicated as 'jump' or 'no jump'.
+\vv
+
+Multiplication and division instructions (including mul\_add and rem) have longer latencies so that the results are shown only after a delay of several clock cycles. These results may appear simultaneously with some other instruction. Multiplication and division results are shown in line 7 instead of input operands. 
 \vv
 
 Direct unconditional jump, call, and return instructions are only visible on the first line because they are handled by the fetch unit only.
 \vv
 
-Pipeline bubbles (jump delays) are indicated by "-".
+Pipeline bubbles due to fetch delays, jump delays or stalls in the address generation stage are indicated by '-'.
 \vv
 
-Pipeline stalls are indicated by "\#". This occurs when the address generator stage or the execute stage (ALU) is waiting for a register value.
+Pipeline stalls are indicated by '\#'. This occurs when the address generator stage or the execute stage is waiting for a register value.
 \vv
 
 
@@ -556,22 +565,19 @@ The functions printf, sprintf, and snprintf are following the C standard with th
 \chapter{Technical description}
 
 \section{Setting the configuration} \label{SettingConfiguration}
-Precompiled bitstream files for different configurations are provided in \\
+Archive files and precompiled bitstream files for different configurations are provided in \\
 
 \href{https://github.com/ForwardCom/softcoreA/tree/main/deviceA7100T}{github.com/ForwardCom/softcoreA/tree/main/deviceA7100T}:
 \begin{itemize}
-\item A1T100R32.bit: 32 bit registers. 32 kB data memory. 64 kB code memory. 68 MHz
-\item A1T100R64.bit: 64 bit registers. 32 kB data memory. 64 kB code memory. 58 MHz
+\item A1T100R32.xpr.zip: Archived project: 32 bit registers. 32 kB data memory. 64 kB code memory.
+\item A1T100R32.bit: Bitstream file. 32 bit registers. 32 kB data memory. 64 kB code memory.
+\item A1T100R64.xpr.zip: Archived project: 64 bit registers. 32 kB data memory. 64 kB code memory
+\item A1T100R64.bit: Bitstream file. 64 bit registers. 32 kB data memory. 64 kB code memory. 58 MHz
 \end{itemize}
 \vv
 
-Other configurations can be built as follows.
-\vv
-
-The file defines.vh contains a choice of configuration files to include. 
-Use config\_r32.vh for a configuration with 32-bit registers, or config\_r64.vh for 64-bit registers. You may make your own configuration with different memory sizes or other parameters. 
-\vv
-
+Other configurations can be built as follows. 
+Change the configuration file config\_A.vh to indicate the desired register size, memory sizes, clock frequency, etc. 
 Make sure you set the clock frequency to the value specified in the configuration file. To change the clock frequency, open the Sources window in Vivado, expand the "top" node, double click on clock\_generator, click on the Output Clocks tab, and set the requested output frequency to the desired value.
 \vv
 
@@ -712,13 +718,17 @@ Vivado produces several warnings during the build process. The following warning
 
 \item {}[Synth 8-7129] Port instruction\_in[29] in module ... is either unconnected or has no load
 
-\item {}[Synth 8-6841] Block RAM (ram\_reg) originally specified as a Byte Wide Write Enable RAM cannot take advantage of ByteWide feature and is implemented with single write enable per RAM due to following reason...
+\item {}[DRC DPOP-1] PREG Output pipelining: DSP muldiv\_inst/p\_0\_out output ... is not pipelined...
 
 \end{itemize}
 \vv
 
 You may disable unwanted warnings because it creates a risk that other warnings are overlooked. Warnings other than these may indicate serious problems.
 \vv
+
+Occasionally, Vivado fails without any diagnostic message. The problem usually goes away when making any change in the code. A safe way to make changes is to comment out or in some debug signals in the file debugger.vh.
+\vv
+
 
 \subsubsection{Timing problems}
 When building a modified softcore, it often happens that it fails to meet the timing requirements. The Vivado tool is not always able to find an optimal routing pattern. Small changes in the code may result in a different routing pattern that is either faster or slower. If only a few signal paths fail to meet the timing requirements by a small negative slack, then it is possible that the problem will go away after any small change in the code, for example in the debug signals or the number of bits in the mask register.
@@ -750,7 +760,7 @@ The CPU design has six pipeline stages:
 Instructions are propagating one by one through the pipeline, advancing one stage per clock cycle.
 \vv
 
-The hardware design consists of modules. Each pipeline stage is a module. In addition to this, there are modules for code memory, data memory, call stack, input/output, etc. Each module has registers (D-flip flops) on its outputs, but not on its inputs. This means that it takes one clock cycle to send a signal from one module to another. The complexity within each module is limited to what can be completed in one clock period.
+The hardware design consists of modules. Each pipeline stage is a module. In addition to this, there are modules for code memory, data memory, call stack, input/output, etc. Each module has registers (D flip-flops) on its outputs, but not on its inputs. This means that it takes one clock cycle to send a signal from one module to another. The complexity within each module is limited to what can be completed in one clock period.
 \vv
 
 The following is a detailed description of each pipeline stage and each module.
@@ -777,6 +787,9 @@ A reset signal will cause a jump to the start address of the loader. A restart s
 
 \subsection{Decode stage}
 The decoder identifies the instruction format, category, number of operands, register use, result type, etc. It also assigns a unique tag to identify each instruction in the pipeline.
+\vv
+
+The decode stage includes a state machine for push and pop instructions that generate multiple micro-operations. The fetch unit is stalled until all the necessary micro-operations have been dispatched to the next stage in the pipeline. The number of different instructions that generate multiple micro-operations should be kept at a minimum in order to limit the complexity of the decode stage.
 \vv
 
 The outputs from the decoder includes the variables listed below. Possible values for each variable are defined in the configuration file, described on page \pageref{SettingConfiguration}.
@@ -812,7 +825,7 @@ All registers needed by an instruction are read at this stage, and the values ar
 \vv
 
 The instruction tag is written to the destination register in the register file. This indicates to subsequent instructions that the value of this register is not available yet. The tag identifies the instruction that is going to deliver the value. Subsequent stages in the pipeline must monitor the result buses for results marked with the tag of any missing register value. The tag is then replaced by the new value and propagated through the rest of the pipeline. 
-This mechanism may be considered a form of register renaming. Multiple values of the same logical register may be in flight in the pipeline at the same time. The tag of a missing register value is replaced by the actual value as soon as it appears on one of the result buses. All stages in the pipeline after the register read stage are monitoring the result buses for missing register values.
+This mechanism may be considered a form of register renaming. Multiple values of the same logical register can be in flight in the pipeline at the same time. The tag of a missing register value is replaced by the actual value as soon as it appears on one of the result buses. All stages in the pipeline after the register read stage are monitoring the result buses for missing register values.
 \vv
 
 Each entry in the register file includes an extra bit which is 1 if the file contains a tag for a pending value, or 0 if the file contains the actual value of the register. The same applies to values propagating through the pipeline.
@@ -885,7 +898,7 @@ Jump and branch instructions have the additional outputs jump\_out and nojump\_o
 The ALU module contains several general units that can service more than one instruction each. This includes a compare unit that is used for signed and unsigned compare instructions, max, min, and compare/branch instructions. A bit manipulation unit for bit operations such as clear, set, toggle, test, etc. A barrel shifter for all shift, rotate, and move\_bits instructions. And a bit scan module for bitscan and roundp2 instructions. There are also several single-purpose units.
 \vv
 
-The bitscan instruction appears to be particularly critical in terms of timing. Future implementations may move the bitscan instruction to a unit with a 2-clock latency.
+The bitscan instruction appears to be particularly critical in terms of timing. Future implementations may move the bitscan instruction to a unit with a longer latency.
 \vv
 
 
@@ -906,7 +919,11 @@ Register results are output to result bus 1 in the same was as for the ALU unit.
 The mul\_div unit implements the execution stage for instructions that have a latency higher than one, such as multiplication and division. The result is output to result bus 2.
 \vv
 
-The multiplication and division units are not implemented yet.
+The latency for multiplication and mul\_add is 5 clock cycles. Multiplication is pipelined so that a new multiplication can start every clock cycle if the operands are ready. 
+\vv
+
+Division is using a radix-4 division loop that is using one clock cycle for every two significant bits of the result. Two clock cycles are used before the division loop for sign detection and for shifting the divisor to the highest position that is not higher than the dividend. One clock stage is used after the division loop for rounding the result, adjusting the sign, etc. The rem instruction is using the same mechanism. 
+Division is not pipelined. The main pipeline will be stalled if a division instruction is waiting for a previous division to finish.
 \vv
 
 
@@ -920,11 +937,11 @@ There are three units that can cause pipeline stalls and bubbles in the present 
 \begin{enumerate}
 \item The fetch unit is waiting for an instruction to be fetched from the code memory after a jump or after the code buffer has been exhausted by multiple triple-size instructions. This is causing a bubble to propagate through the entire pipeline
 \item The address generation stage is waiting for a register value needed for the address calculation. This is causing a stall in the preceding pipeline stages and a bubble in the subsequent stages
-\item The execution stage is waiting for the value of a register operand. This is causing a stall in the entire pipeline
+\item The execution stage is waiting for the value of a register operand. This is causing a stall in the entire pipeline. This also happens if a division instruction is waiting for the division unit to be vacant.
 \end{enumerate}
 \vv
 
-The handling of pipeline stalls and bubbles is quite tricky and delicate because stalls must be predicted one clock cycle in advance, and we must make sure that every instruction is dispatched once, and only once, from each pipeline stage to the next. The dataread stage is sending out predict\_tag signals giving the instruction tag of the result that is predicted to be sent to result bus 1 in the next clock cycle. The predict\_tag signal is used by the register read stage to predict whether the necessary register values will be available for the address calculation stage in the next clock cycle. In the same way, the data read stage is using the predict\_tag signal to predict whether all operands will be ready for the execution stage in the next clock cycle. 
+The handling of pipeline stalls and bubbles is quite tricky and delicate because stalls must be predicted one clock cycle in advance, and we must make sure that every instruction is dispatched once, and only once, from each pipeline stage to the next. The dataread stage is sending out predict\_tag signals giving the instruction tag of the result that is predicted to be sent to result bus 1 in the next clock cycle. The predict\_tag signal is used by the register read stage to predict whether the necessary register values will be available for the address calculation stage in the next clock cycle. In the same way, the data read stage is using the predict\_tag signal to predict whether all operands will be ready for the execution stage in the next clock cycle. The mul\_div unit is sending out a predict\_tag2 signal one clock cycle before a result is sent to result bus 2.
 \vv
 
 The register read stage and the data read stage will send out a stall\_predict signal if they predict a stall in the next clock cycle. These signals are fed to stall\_in inputs of all preceding pipeline stages, telling them to halt and keep their data until the pipeline is ready to proceed.
@@ -936,9 +953,6 @@ A stalled pipeline stage must keep all its data unchanged, with one exception. I
 Pipeline bubbles are controlled by valid\_in and valid\_out signals. The valid\_out signal of each pipeline stage is connected to the valid\_in signal of he next stage. This signal is 1 if a valid instruction is being propagated, or 0 if there is a pipeline bubble. All other inputs must be ignored when the valid\_in signal is zero.
 \vv
 
-Future designs may need handshaking signals for detecting whether a result bus is vacant, but this is not relevant yet.
-\vv
-
 
 \subsection{Data memory}
 The module named data\_memory contains a RAM memory for data only. The size is a power of 2 determined by the variable DATA\_ADDR\_WIDTH defined in a configuration file.
@@ -947,7 +961,7 @@ The module named data\_memory contains a RAM memory for data only. The size is a
 The data RAM has one read port and one write port, each 64 bits wide. Reads and writes of less than 64 bits are allowed, but all reads and writes must have natural alignment.
 \vv
 
-The input read\_data\_size indicates data sizes of 8, 16, 32, or 64 bits. Reads of less than 64 bits are left-justified in the output read\_data\_out.
+The input read\_data\_size indicates data sizes of 8, 16, 32, or 64 bits. Reads of less than 64 bits are right-justified in the output read\_data\_out.
 \vv
 
 The 64-bit input write\_data\_in is divided into eight bytes enabled separately. The 8-bit input write\_enable enables each byte separately. Memory writes of less than 64 bits are controlled by the address generator by placing the data in the right position and enabling only the bytes that contain actual data.
@@ -1021,7 +1035,7 @@ The loader is a piece of software written in ForwardCom assembly language. The l
 The loader is placed at the end of code memory. The start address of the loader is calculated as the size of the code memory minus MAX\_LOADER\_SIZE. This address is hard-coded into the softcore. The CPU will jump to this address at start and when the load button is pressed. 
 \vv
 
-Debugging the loader is easier when  MAX\_LOADER\_SIZE is a multiple of 0x100 so that the last two digits of addresses on the debug display match addresses in the loader assembly listing.
+The loader can be debugged by inserting breakpoint instructions at the desired places. It is recommended to set  MAX\_LOADER\_SIZE to a multiple of 0x100 during debugging so that the last two digits of addresses on the debug display match addresses in the loader assembly listing.
 \vv
 
 A loaded program can be re-started by jumping to the RESTART code, which is placed at the loader start address plus 1.
@@ -1034,7 +1048,10 @@ Constant (read-only) IP-based data sections are placed at the end of data RAM so
 Data sections with read/write access are read into the first vacant data RAM address and later moved down to address zero when the loader has finished using the program headers. The rest of data RAM is then cleared to zero.
 \vv
 
-The data stack pointer (r31) is set to the top of vacant data RAM, which is the beginning of const data. The program start address, DATAP, and THREADP are set to the addresses defined in the file header. These addresses are not stored in data RAM, but inserted in the RESTART code so that all data RAM is available to the running program. When the loader has finished loading all sections, it jumps to the RESTART code. The RESTART code sets the stack pointer, DATAP, and THREADP, clears all other registers, and jumps to the program start address.
+The data stack pointer (r31) is set to the top of vacant data RAM, which is the beginning of const data. The program start address, DATAP, and THREADP are set to the addresses defined in the file header. These addresses are not stored in data RAM, but inserted in the RESTART code so that all data RAM is available to the running program. When the loader has finished loading all sections, it jumps to the RESTART code. The RESTART code sets the stack pointer, DATAP, and THREADP, clears all other registers, and jumps to the program start address. 
+\vv
+
+The RESTART code clears the registers but does not reset the RAM memory when the restart button is pressed.
 \vv
 
 The loader works with both the 32-bit version and the 64-bit version of the softcore.
@@ -1055,39 +1072,36 @@ The use of LUTs (lookup tables) and registers (flip flops) in the 32-bit and 64-
 \hline
 \bfseries Module & \multicolumn{2}{|c|}{\bfseries Slice registers} & \multicolumn{2}{c|}{\bfseries Slice LUTs}  \\
 \bfseries  & \bfseries 32-bit version & \bfseries 64-bit version & \bfseries 32-bit version & \bfseries 64-bit version  \\ \hline
-Fetch  &  351 &  350  & 1309 & 1286 \\ \hline
-Decode  & 175  &  188 & 400 & 465 \\ \hline
-Register read & 1635  &  3010 & 3296 & 4711 \\ \hline
-Address generator  & 558 & 785 & 697 & 1550 \\ \hline
-Data read  & 356  & 561 & 2994 & 5267  \\ \hline
-Execute ALU  & 80  & 112 & 680 & 2437 \\ \hline
-Execute in/out, uart  & 703 & 1213 & 501 & 361 \\ \hline
-Execute mul/div  &   &  &  &   \\ \hline
-Code memory  & 15  & 15  & 103 & 115 \\ \hline
-Data memory  & 3  &  3  & 99 & 98 \\ \hline
-Call stack  & 29  &  29  & 442 & 445 \\ \hline
-Debug display  & 485  & 485  & 747 & 752 \\ \hline
-Total  & 4639  & 7032  & 12026 & 17873 \\ \hline
+Fetch                &  347  &  347  &  1214 &  1188 \\ \hline
+Decode               & 242   &  257  &   571 &   675 \\ \hline
+Register read        & 1635  & 3014  &  2859 &  5416 \\ \hline
+Address generator    & 509   &  734  &   895 &   517 \\ \hline
+Data read            & 258   &  375  &  3129 &  6040 \\ \hline
+Execute ALU          & 84    &  119  &  1005 &  2649 \\ \hline
+Execute in/out, uart & 698   & 1205  &   477 &   571 \\ \hline
+Execute mul/div      & 517   &  939  &  1593 &  2389 \\ \hline
+Code memory          & 0     &    0  &    44 &    44 \\ \hline
+Data memory          & 3     &    3  &   263 &   291 \\ \hline
+Call stack           & 29    &   29  &   443 &   445 \\ \hline
+Debug display        & 485   &  487  &   735 &   778 \\ \hline
+Total                & 4990  & 7392  & 13248 & 21121 \\ \hline
 \end{tabular}
 \caption{Resource use of softcore}
 \label{table:ResourceUse}
 \end{table}
 \vv
 
-The data memory is using a disproportionate amount of FPGA slices because it is implemented as distributed RAM. I have problems making it use block RAM instead.
-\vv
-
-The propagation of source operand values through the pipeline is using 32 or 64 bits per operand in each pipeline stage. If a pipeline stage is stalled, then it needs to keep the old instruction on its output until the next stage is ready to receive it. At the same time, it needs to catch operand values from the result buses for the pending next instruction. This doubles the required number of registers. If we allow three source operands and a mask of 64 bits each, then we need 4*64*2 = 512 flip flops just for catching and propagating data in each pipeline stage. This number of flip flops is not a problem for an FPGA with 100,000 cells or more, but the associated logic and routing is actually consuming a significant amount of resources. We may reduce the resource use for smaller applications by reducing the register size to 32 bits. The mask register may even be reduced to 16 bits.
+The propagation of source operand values through the pipeline is using 32 or 64 bits per operand in each pipeline stage. If a pipeline stage is stalled, then it needs to keep the old instruction on its output until the next stage is ready to receive it. At the same time, it needs to catch operand values from the result buses for the pending next instruction. This doubles the required number of registers in the register read and address generator stages. If we allow three source operands and a mask of 64 bits each, then we need 4*64*2 = 512 flip flops just for catching and propagating data in each pipeline stage. This number of flip flops is not a problem for an FPGA with 100,000 cells or more, but the associated logic and routing is actually consuming a significant amount of resources. We may reduce the resource use for smaller applications by reducing the register size to 32 bits. The mask register may be reduced to 16 bits.
 \vv
 
 The result buses are also consuming a significant amount of resources because each pipeline stage must monitor all result busses and compare the result tags with all four source operands (including mask register). This is particularly critical in the execution stage where timing is critical. 
-Therefore, we may let multiple execution units share the same result bus and use handshaking logic to check when a result bus is vacant.
+Therefore, we have multiple execution units sharing the same result busses.
 \vv
 
 The timing problems that we encounter are often dominated by routing delays rather than logic delays. It is necessary to take this into account and limit the number of cross connections between modules.
 \vv
 
-An important feature that distinguishes ForwardCom from other ISAs is that each instruction can have many different variants. This feature is actually fairly cheap in terms of hardware resources. There are many different instruction formats, and it takes many lines of verilog code to decode these formats, but the resulting hardware is actually a fairly trivial combinational logic with a limited number of inputs and outputs. It requires only a few bits to tell where an operand is or what a register is used for - in contrast to the many bits used for handling and propagating up to three or four operands of 64 bits each. The timing of the decoding process is not critical at all because the logic to handle all aspects of the decoding process can be divided over several pipeline stages. Likewise, we have several pipeline stages to handle the decoding and unpacking of immediate constants and option bits, and it is not important which pipeline stage we place this code in.
+An important feature that distinguishes ForwardCom from other ISAs is that each instruction can have many different variants. This feature is actually fairly cheap in terms of hardware resources. There are many different instruction formats, and it takes many lines of verilog code to decode these formats, but the resulting hardware is actually a fairly trivial combinational logic with a limited number of inputs and outputs. It requires only a few bits to tell where an operand is or what a register is used for -- in contrast to the many bits used for handling and propagating up to three or four operands of 64 bits each. The timing of the decoding process is not critical at all because the logic to handle all aspects of the decoding process can be divided over several pipeline stages. Likewise, we have several pipeline stages to handle the decoding and unpacking of immediate constants and option bits, and it is not important which pipeline stage we place this code in.
 \vv
 
 The fact that ForwardCom has instructions that combine memory read with arithmetic or logic instructions comes at a significant price, though, because it makes the pipeline longer. 
@@ -1098,25 +1112,22 @@ The fact that ForwardCom has instructions that combine memory read with arithmet
 This section discusses some prospective future extensions to the ForwardCom softcore.
 \vv
 
-Multiplication and division instructions need to have a latency of more than one clock cycle. The mul\_div module is prepared for this purpose but not implemented yet. These instructions will use result bus 2.
-\vv
-
-Push and pop instructions will be split into multiple micro-operations in the decode stage. It will be possible to push or pop multiple registers by a single instruction.
-\vv
-
 Vector instructions will be implemented with a separate pipeline for each 64-bit vector lane. Each lane will have its own register file holding a 64-bit slice of each vector register. Designs with small vectors may have direct access to a common data RAM. Designs with long vectors may have one data cache or RAM for each vector lane. Memory access will be fast when aligned by the maximum vector length but slower when not aligned because it requires a very big barrel shifter to exchange data between lanes. The vector pipeline probably needs an extra stage for data alignment.
 \vv
 
-A superscalar softcore will be able to fetch and decode at least two instructions per clock cycle. There may be two pipelines for non-vector instructions: One for instructions with memory operands, and a shorter pipeline for instructions without memory operands. There will probably be only one pipeline for vector instructions. It will be possible to execute two instructions per clock cycle if they can go to two different pipelines. The short pipeline for instructions without memory operands will make jump delays shorter. The instructions will be executed in order within each pipeline.
+A superscalar softcore will be able to fetch and decode two or more instructions per clock cycle. There may be two pipelines for non-vector instructions: One for instructions with memory operands, and a shorter pipeline for instructions without memory operands. There will probably be only one pipeline for vector instructions. It will be possible to execute two instructions per clock cycle if they can go to two different pipelines. The short pipeline for instructions without memory operands will make jump delays shorter. The instructions will be executed in order within each pipeline.
 \vv
 
 
 \section{Performance metrics}
-The maximum clock frequency varies from 50 to 70 MHz depending on register size, memory sizes, and other configuration details. The current settings are 67.5 MHz for the 32-bit register version and 58 MHz for the 64-bit register version of the softcore. The maximum clock frequency can be increased by a few MHz when the memory sizes are reduced or some instructions removed from the ALU. The bitscan instruction, in particular, is critical.
+The maximum clock frequency varies from 50 to 70 MHz depending on register size, memory sizes, and other configuration details. The current settings are 64 MHz for the 32-bit register version and 56 MHz for the 64-bit register version of the softcore. The maximum clock frequency can be increased by a few MHz when the memory sizes are reduced or some instructions removed from the ALU. The bitscan instruction, in particular, is critical.
 \vv
 
 The maximum throughput is one instruction per clock cycle. The latency is one clock cycle for most instructions. 
 \vv
+
+Multiplication and mul\_add instructions have a latency of five clock cycles and a throughput of one multiplication per clock cycle. Division has a latency of three clock cycles plus one additional clock cycle for every two significant bits in the result. It is not possible to start a new division before a previous division is finished. Push and pop instructions take one clock cycle for each register plus a single additional clock cycle for adjusting the stack pointer. All other arithmetic and logic instructions have a latency of one clock cycle.
+\vv 
 
 Unconditional direct jumps, calls, and returns have a latency of 2 clock cycles.
 \vv
@@ -1130,12 +1141,18 @@ Memory reads have a delay of 2 clocks after the modification of a pointer or ind
 Memory writes have a delay similar to memory reads if address registers are modified within the preceding two instructions. The same delay applies if the register holding the value to write is modified within the preceding two instructions.
 \vv
 
+All instructions start to execute in order, but they do not necessarily finish in order in case of instructions with longer latencies. Two instructions can finish in the same clock cycle, using different result buses.
+\vv
+
 
 \section{Portability}
 The hardware code written in SystemVerilog avoids device-specific code. It should be possible to port this to other FPGA models, other FPGA brands, or even to an ASIC.
 \vv
 
 The clock generator is auto-generated by the Vivado clock vizard. It needs to be adjusted or redesigned for other FPGAs.
+\vv
+
+The multiplication unit may need different latencies for different FPGA types. This is adjusted by the value of MUL\_STEPS in the file mul\_div.sv. Some FPGA types may supply library code for faster division, but the code provided in mul\_div.sv is written to be generic and device-independent.
 \vv
 
 The 7-segment display on the Nexys A7 FPGA board is used for debugging and error messaging. Other FPGA boards may have other kinds of display.
@@ -1145,12 +1162,55 @@ The constraints files contain device-specific information about pin connections 
 \vv
 
 
+\section{File list}
+The following files are provided with the soft core:
+
+\begin{table}[h]
+\label{table:FileList}
+\begin{tabular}{|l|l|} 
+\hline
+\bfseries File & \bfseries Explanation  \\ \hline
+top.sv & top level hardware description file, system verilog \\ \hline
+fetch.sv & pipeline stage 1: instruction fetch \\ \hline
+decoder.sv & pipeline stage 2: instruction decoder \\ \hline
+register\_read.sv & pipeline stage 3: register file \\ \hline
+addressgenerator.sv & pipeline stage 4: address calculation \\ \hline
+dataread.sv & pipeline stage 5: data read \\ \hline
+alu.sv & pipeline stage 6: execution unit for most arithmetic and logic instructions \\ \hline
+mul\_div.sv & pipeline stage 6: execution unit for multiplication and division \\ \hline
+in\_out\_ports.sv & pipeline stage 6: execution unit for input, output, system registers, etc. \\ \hline
+uart\_and\_fifo.sv & UART and FIFO buffers used by input and output ports \\ \hline
+code\_memory.sv & code memory \\ \hline
+data\_memory.sv & data RAM \\ \hline
+call\_stack.sv & call stack for function return addresses \\ \hline
+debouncer.sv & debouncer for on-board pushbuttons \\ \hline
+debugger.vh & on-board 7-segment debug display \\ \hline
+seg7.sv & 7-segment display decoder for on-board display \\ \hline
+debug\_display.sv & add-on board LCD debug display \\ \hline
+lcd.sv & LCD display driver \\ \hline
+config\_A.vh & configuration file, defining register size, memory size, etc. \\ \hline
+defines.vh & definition of constants \\ \hline
+subfunctions.vh & subfunctions used by ALU \\ \hline
+loader.mem & hex file for on-board loader \\ \hline
+loader.as & assembly source code for on-board loader \\ \hline
+manual/softcore\_A.pdf & this manual \\ \hline
+manual/softcore\_A.tex & Latex source for this manual \\ \hline
+\end{tabular}
+\end{table}
+\vv
+
+
 \chapter{Revision history}
 
-\subsubsection{Version 1.00, 2021-08-07}
+\subsubsection{Version A1.01, 2022-12-29}
+\begin{itemize}
+\item Revision for ForwardCom standard version 1.12. Multiplication, division, push, and pop instructions added.
+\end{itemize}
+
+\subsubsection{Version A1.00, 2021-08-07}
 
 \begin{itemize}
-\item First published ForwardCom softcore. Integer only. No vectors.
+\item First published ForwardCom softcore. 32 and 64 bit versions. Integer only. No vectors.
 \end{itemize}
 \vv
 
@@ -1162,7 +1222,7 @@ The hardware description code is published under the \href{https://cern-ohl.web.
 All the code is written from scratch without importing any code from elsewhere. This makes sure that all the code has the same license.
 \vv
 
-This manual is copyrighted 2021 by Agner Fog with a 
+This manual is copyrighted 2021-2022 by Agner Fog with a 
 \href{https://creativecommons.org/licenses/by/4.0/legalcode}{Creative Commons license CC-BY}.
 
 
