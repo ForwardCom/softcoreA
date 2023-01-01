@@ -1,13 +1,15 @@
+
 /******************************************************************************
 * Engineer: Agner Fog 
 * 
 * Create date:   2020-05-03
-* Last modified: 2021-08-05
+* Last modified: 2022-01-01
 * Module name:   top
 * Project name:  ForwardCom soft core
 * Tool versions: Vivado 2020.1 
 * License:       CERN-OHL-W version 2 or later
 * Description:   Top level module of ForwardCom softcore
+* Softcore version A1.01, ForwardCom standard version 1.12
 * 
 * The pipeline stages are connected here:
 * 1.  fetch:            Fetch code words from code memory
@@ -70,7 +72,7 @@ module top (
     input debug1_switch,          // enable single-stepping, pipeline mode
     input debug2_switch,          // enable single-stepping, instruction mode
     input uart_txd_in,            // UART transmit from PC
-    input uart_rts_in,            // UART RTS from PC
+    //input uart_rts_in,            // UART RTS from PC
     output reg [7:0] segment7seg, // segment output, active low
     output reg [7:0] digit7seg,   // digit select output, active low
     output reg [3:0] lcd_data,    // data to LCD display
@@ -186,7 +188,7 @@ logic        decoder_read;                                 // read register enab
 logic        decoder_valid;                                // An instruction is ready for output to next stage
 logic [`CODE_ADDR_WIDTH-1:0] decoder_instruction_pointer;  // address of current instruction
 logic [95:0] decoder_instruction;                          // first word of instruction    
-logic        decoder_stall;                                // Not ready to receive next instruction
+logic        decoder_stall_predict;                                // Not ready to receive next instruction
 logic [5:0]  decoder_tag_a;                                // register number for instruction tag
 logic        decoder_vector;                               // this is a vector instruction
 logic [1:0]  decoder_category;                             // 00: multiformat, 01: single format, 10: jump
@@ -205,6 +207,8 @@ logic [1:0]  decoder_offset_field;                         // address offset. 0:
 logic [1:0]  decoder_immediate_field;                      // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit
 logic [1:0]  decoder_scale_factor;                         // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
 logic        decoder_index_limit;                          // index has a limit
+logic        decoder_multi_finish;                         // Decoding multiple micro-op instruction is finishing
+logic        decoder_error;                                // wrong format or parameter detected in decoder
 logic [31:0] decoder_debug1;                               // temporary debug output
 
 // register read stage
@@ -226,7 +230,7 @@ logic [`RB:0] registerread_rd_val;                         // value of register 
 logic [`RB:0] registerread_rs_val;                         // value of register operand RS, bit `RB indicates missing 
 logic [`RB:0] registerread_rt_val;                         // value of register operand RT, bit `RB indicates missing 
 logic [`RB:0] registerread_ru_val;                         // value of register operand RU, bit `RB indicates missing 
-logic [`MASKSZ:0] registerread_regmask_val;                // value of mask register, bit 32 indicates missing
+logic [`MASKSZ:0] registerread_mask_val;                   // value of mask register, bit 32 indicates missing
 logic [1:0]   registerread_rd_status;                      // RD is used as input
 logic [2:0]   registerread_rs_status;                      // use of RS
 logic [2:0]   registerread_rt_status;                      // use of RT
@@ -246,11 +250,12 @@ logic        addrgen_valid;                                // An instruction is 
 logic [`CODE_ADDR_WIDTH-1:0] addrgen_instruction_pointer;  // address of current instruction
 logic [63:0] addrgen_instruction;                          // first word of instruction    
 logic        addrgen_stall_next;                           // address generator waiting for an operand
+logic        addrgen_div_predict;                          // a division instruction is underway
 logic [`TAG_WIDTH-1:0] addrgen_tag_val;                    // instruction tag value
 logic [`RB:0] addrgen_operand1;                            // value of first register operand 
 logic [`RB:0] addrgen_operand2;                            // value of second register operand 
 logic [`RB:0] addrgen_operand3;                            // value of last operand 
-logic [`MASKSZ:0] addrgen_regmask_val;                     // value of mask register, bit 32 indicates valid
+logic [`MASKSZ:0] addrgen_mask_val;                        // value of mask register, bit 32 indicates valid
 logic        addrgen_vector;                               // this is a vector instruction
 logic [1:0]  addrgen_category;                             // instruction category: multiformat, single format, jump
 logic [1:0]  addrgen_format;                               // instruction format: A, E, B, D
@@ -288,7 +293,7 @@ logic [1:0]  dataread_num_operands;                        // number of source o
 logic        dataread_opr1_used;                           // opr1_val_out is needed
 logic        dataread_opr2_used;                           // opr2_val_out is needed
 logic        dataread_opr3_used;                           // opr3_val_out is needed
-logic        dataread_regmask_used;                        // regmask_val_out is needed
+logic        dataread_mask_used;                           // mask_val_out is needed
 logic        dataread_mask_alternative;                    // mask register and fallback register used for alternative purposes
 logic [1:0]  dataread_result_type;                         // type of result: 0: register, 1: system register, 2: memory, 3: other or nothing
 logic [3:0]  dataread_exe_unit;                            // each bit enables a particular execution unit
@@ -296,8 +301,8 @@ logic [3:0]  dataread_exe_unit;                            // each bit enables a
 logic [6:0]  dataread_opx;                                 // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
 logic [5:0]  dataread_opj;                                 // operation ID for conditional jump instructions
 logic [2:0]  dataread_ot;                                  // operand type
-logic [5:0]  dataread_option_bits;                         // option bits from IM3 or mask
-logic [15:0] dataread_im2_bits;                            // constant bits from IM2 as extra operand    
+logic [5:0]  dataread_option_bits;                         // option bits from IM5 or mask
+logic [15:0] dataread_im4_bits;                            // constant bits from IM4 as extra operand    
 logic        dataread_trap;                                // trap instruction detected. enable single step mode
 logic        dataread_array_error;                         // array index out of bounds
 logic        dataread_read_address_error;                  // invalid read memory address
@@ -327,12 +332,14 @@ logic        muldiv_write_en;                              // write value to reg
 logic [4:0]  muldiv_register_a;                            // register to write
 logic [`RB1:0] muldiv_result;                              // result to write
 logic [`TAG_WIDTH-1:0] muldiv_tag;                         // instruction tag value
-logic muldiv_stall;
-logic muldiv_stall_next;
+logic muldiv_divout;                                       // muldiv output is division result
+logic muldiv_stall;                                        // division stall
+logic muldiv_stall_next;                                   // division stall predicted next
 logic muldiv_error;                                        // unknown instruction
 logic muldiv_error_parm;                                   // wrong parameter for instruction
 logic [31:0] muldiv_debug1;                                // output for debugger
 logic [31:0] muldiv_debug2;                                // output for debugger
+logic [31:0] muldiv_debug3;                                // output for debugger
 
 // in_out_ports
 logic inout_valid;                                         // for debug display: in_out is active
@@ -397,12 +404,10 @@ always_comb begin
     code_read_addr = alu_jump ? (alu_jump_pointer >> 1) : fetch_read_addr;
     // predict next tag on bus 1
     predict_tag1 = (dataread_exe_unit[0] | dataread_exe_unit[3]) ? dataread_tag_val : 0;
-    // predict next tag on bus 2. To do: insert propagation delay !! 
-    predict_tag2 = (dataread_exe_unit[1] | dataread_exe_unit[2]) ? dataread_tag_val : 0; 
     
     // error detection
     errors_detect[0] = alu_error | muldiv_error | inout_error; // unknown instruction 
-    errors_detect[1] = alu_error_parm | muldiv_error_parm | inout_error_parm | call_stack_overflow; // wrong parameter for instruction
+    errors_detect[1] = decoder_error | alu_error_parm | muldiv_error_parm | inout_error_parm | call_stack_overflow; // wrong parameter for instruction
     errors_detect[2] = dataread_array_error;               // array index out of bounds
     errors_detect[3] = dataread_read_address_error;        // read address violation
     errors_detect[4] = dataread_write_address_error;       // write address violation
@@ -442,7 +447,7 @@ always_ff @(posedge clock) begin
     if (run_button_pulse)  single_step_mode <= 0;
     if (step_button_pulse) single_step_mode <= 1;
     if (dataread_trap)     single_step_mode <= 1;          // breakpoint sets single step mode
-    if (|(errors_detect & ~inout_capab_disable_errors) && !switch15) single_step_mode <= 1; // error detected
+    if (|(errors_detect & ~inout_capab_disable_errors) & !switch15) single_step_mode <= 1; // error detected
     
     if (clear_error) show_error <= 0;
     if (|(errors_detect & ~inout_capab_disable_errors)) show_error <= 1;
@@ -502,9 +507,9 @@ fetch fetch_inst(
     .reset(system_reset),                                  // system reset.
     .restart(program_restart),                             // restart loaded program
     .valid_in(1),                                          // data from code memory ready
-    .stall_in(registerread_stall_predict | addrgen_stall_next | dataread_stall_predict | alu_stall_next | muldiv_stall_next | inout_stall_next),   // pipeline is stalled 
+    .stall_in(decoder_stall_predict | registerread_stall_predict | addrgen_stall_next | dataread_stall_predict | alu_stall_next | muldiv_stall_next | inout_stall_next),   // pipeline is stalled 
     .jump_in(alu_jump),                                    // a jump target is coming from the ALU.
-    .nojump_in(alu_nojump | inout_nojump),                 // jump target is next instruction
+    .nojump_in(alu_nojump | inout_nojump | decoder_multi_finish), // jump target is next instruction
     .jump_pointer(alu_jump_pointer),                       // jump target from ALU. jump_pointer is also sent to the code memory
     .read_data(code_memory_data),                          // data from code memory
     .return_pop_data(call_stack_pop_data),                 // Return address popped here at return instruction
@@ -526,7 +531,7 @@ decoder decoder_inst (
     .clock_enable(clock_enable),                           // clock enable. Used when single-stepping
     .reset(system_reset),                                  // system reset. 
     .valid_in(fetch_valid),                                // data from fetch module ready
-    .stall_in(registerread_stall_predict | addrgen_stall_next | dataread_stall_predict | alu_stall_next | muldiv_stall_next | inout_stall_next),   // pipeline is stalled
+    .stall_in(decoder_stall_predict | registerread_stall_predict | addrgen_stall_next | dataread_stall_predict | alu_stall_next | muldiv_stall_next | inout_stall_next),   // pipeline is stalled
     .instruction_pointer_in(fetch_inst.instruction_pointer_out), // address of current instruction
     .instruction_in(fetch_instruction),                    // current instruction, up to 3 words long
     .write_en1(bus1_write_en),                             // a result is written to bus 1
@@ -537,7 +542,7 @@ decoder decoder_inst (
     .valid_out(decoder_valid),                             // An instruction is ready for output to next stage
     .instruction_pointer_out(decoder_instruction_pointer), // address of current instruction
     .instruction_out(decoder_instruction),                 // first word of instruction    
-    .stall_out(decoder_stall),                             // Not ready to receive next instruction
+    .stall_predict_out(decoder_stall_predict),             // Not ready to receive next instruction
     .tag_a_out(decoder_tag_a),                             // register number for instruction tag
     .tag_val_out(decoder_tag_val),                         // instruction tag value
     .tag_write_out(decoder_tag_write),                     // instruction tag write enable
@@ -558,6 +563,8 @@ decoder decoder_inst (
     .immediate_field_out(decoder_immediate_field),         // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit    
     .scale_factor_out(decoder_scale_factor),               // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
     .index_limit_out(decoder_index_limit),                 // The field indicated by offset_field contains a limit to the index
+    .multi_finish_out(decoder_multi_finish),               // Decoding multiple micro-op instruction is finishing
+    .error_out(decoder_error),                             // wrong format or parameter detected in decoder
     .debug1_out(decoder_debug1)                            // temporary debug output
 );
 
@@ -566,7 +573,7 @@ register_read register_read_inst (
     .clock_enable(clock_enable),                           // clock enable. Used when single-stepping
     .reset(system_reset),                                  // system reset. 
     .valid_in(decoder_valid),                              // data from fetch module ready
-    .stall_in(registerread_stall_predict | addrgen_stall_next | dataread_stall_predict | alu_stall_next | muldiv_stall_next | inout_stall_next),   // pipeline is stalled
+    .stall_in(decoder_stall_predict | registerread_stall_predict | addrgen_stall_next | dataread_stall_predict | alu_stall_next | muldiv_stall_next | inout_stall_next),   // pipeline is stalled
     .instruction_pointer_in(decoder_instruction_pointer),  // address of current instruction
     .instruction_in(decoder_instruction),                  // current instruction, up to 3 words long
     .tag_write_in(decoder_tag_write),                      // write tag
@@ -597,6 +604,8 @@ register_read register_read_inst (
     .write_en2(bus2_write_en),                             // a result is written to bus 2
     .write_tag2(bus2_tag),                                 // tag of result in bus 2
     .debug_reada(debug_reada),                             // register read port for debugger        
+    .predict_tag1_in(predict_tag1),                        // tag on result bus 1 in next clock cycle
+    .predict_tag2_in(predict_tag2),                        // tag on result bus 2 in next clock cycle
     
     .valid_out(registerread_valid),                        // An instruction is ready for output to next stage
     .instruction_pointer_out(registerread_instruction_pointer), // address of current instruction
@@ -616,7 +625,7 @@ register_read register_read_inst (
     .rs_val_out(registerread_rs_val),                      // value of register operand RS, bit `RB indicates missing 
     .rt_val_out(registerread_rt_val),                      // value of register operand RT, bit `RB indicates missing 
     .ru_val_out(registerread_ru_val),                      // value of register operand RU, bit `RB indicates missing 
-    .regmask_val_out(registerread_regmask_val),            // value of mask register, bit 32 indicates missing
+    .mask_val_out(registerread_mask_val),                  // value of mask register, bit 32 indicates missing
     .rd_status_out(registerread_rd_status),                // 1: RD is used as input
     .rs_status_out(registerread_rs_status),                // use of RS
     .rt_status_out(registerread_rt_status),                // use of RT
@@ -656,7 +665,7 @@ addressgenerator addressgenerator_inst (
     .rs_val_in(registerread_rs_val),                       // value of register operand RS, bit `RB indicates missing 
     .rt_val_in(registerread_rt_val),                       // value of register operand RT, bit `RB indicates missing 
     .ru_val_in(registerread_ru_val),                       // value of register operand RU, bit `RB indicates missing 
-    .regmask_val_in(registerread_regmask_val),             // mask register
+    .mask_val_in(registerread_mask_val),                   // mask register
     .write_en1(bus1_write_en),                             // a result is written to bus 1
     .write_tag1_in(bus1_tag),                              // tag of result in bus 1
     .writeport1_in(bus1_value),                            // result bus 1
@@ -665,6 +674,8 @@ addressgenerator addressgenerator_inst (
     .writeport2_in(bus2_value),                            // result bus 2
     .predict_tag1_in(predict_tag1),                        // tag on result bus 1 in next clock cycle
     .predict_tag2_in(predict_tag2),                        // tag on result bus 2 in next clock cycle
+    //.ram_data_in(data_memory_data),                        // memory operand from data memory
+    
     .read_write_address_out(addrgen_read_write_address),   // address of read memory operand
     .read_enable_out(addrgen_read_enable),                 // enable read from data memory
     .read_data_size_out(addrgen_read_data_size),           // data size for memory read       
@@ -674,11 +685,12 @@ addressgenerator addressgenerator_inst (
     .instruction_pointer_out(addrgen_instruction_pointer), // address of current instruction
     .instruction_out(addrgen_instruction),                 // first word of instruction    
     .stall_predict_out(addrgen_stall_next),                // will be waiting for an operand        
+    .div_predict_out(addrgen_div_predict),                 // a division instruction is underway
     .tag_val_out(addrgen_tag_val),                         // instruction tag value    
     .operand1_out(addrgen_operand1),                       // value of first operand, bit `RB indicates invalid 
     .operand2_out(addrgen_operand2),                       // value of second operand, bit `RB indicates invalid 
     .operand3_out(addrgen_operand3),                       // value of last, bit `RB indicates valid 
-    .regmask_val_out(addrgen_regmask_val),                 // value of mask register, bit 32 indicates valid    
+    .mask_val_out(addrgen_mask_val),                       // value of mask register, bit 32 indicates valid    
     .vector_out(addrgen_vector),                           // this is a vector instruction
     .category_out(addrgen_category),                       // 00: multiformat, 01: single format, 10: jump
     .format_out(addrgen_format),                           // 00: format A, 01: format E, 10: format B, 11: format C (format D never goes through decoder)    
@@ -692,7 +704,7 @@ addressgenerator addressgenerator_inst (
     .scale_factor_out(addrgen_scale_factor),               // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
     .memory_operand_out(addrgen_memory_operand),           // The instruction has a memory operand
     .array_error_out(addrgen_array_error),                 // Array index exceeds limit
-    .options3_out(addrgen_options3),                       // IM3 containts option bits
+    .options5_out(addrgen_options5),                       // IM5 containts option bits
     .debug1_out(addrgen_debug1),                           // Temporary output for debugging purpose
     .debug2_out(addrgen_debug2),                           // Temporary output for debugging purpose                
     .debug3_out(addrgen_debug3)                            // Temporary output for debugging purpose                
@@ -717,7 +729,8 @@ dataread dataread_inst (
     .immediate_field_in(addrgen_immediate_field),          // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit
     .memory_operand_in(addrgen_memory_operand),            // the instruction has a memory operand
     .array_error_in(addrgen_array_error),                  // Array index exceeds limit
-    .options3_in(addrgen_options3),                        // IM3 containts option bits
+    .options5_in(addrgen_options5),                        // IM5 containts option bits
+    //.div_busy_in(muldiv_busy),                             // divider is busy
     .write_en1(bus1_write_en),                             // a result is written to bus 1
     .write_tag1_in(bus1_tag),                              // tag of result in bus 1
     .writeport1_in(bus1_value),                            // result bus 1
@@ -729,7 +742,7 @@ dataread dataread_inst (
     .operand1_in(addrgen_operand1),                        // value of first operand
     .operand2_in(addrgen_operand2),                        // value of second operand
     .operand3_in(addrgen_operand3),                        // value of last operand
-    .regmask_val_in(addrgen_regmask_val),                  // mask register
+    .mask_val_in(addrgen_mask_val),                        // mask register
     .address_in(addrgen_read_write_address),               // address of memory operand
     .ram_data_in(data_memory_data),                        // memory operand from data memory
     .valid_out(dataread_valid),                            // An instruction is ready for output to next stage
@@ -751,14 +764,14 @@ dataread dataread_inst (
     .opr1_used_out(dataread_opr1_used),                    // operand1 is needed
     .opr2_used_out(dataread_opr2_used),                    // operand2 is needed
     .opr3_used_out(dataread_opr3_used),                    // operand3 is needed
-    .regmask_used_out(dataread_regmask_used),              // regmask_val_out is needed
+    .mask_used_out(dataread_mask_used),                    // mask_val_out is needed
     .mask_alternative_out(dataread_mask_alternative),      // mask register and fallback register used for alternative purposes
     .exe_unit_out(dataread_exe_unit),                      // each bit enables a particular execution unit
     .opx_out(dataread_opx),                                // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     .opj_out(dataread_opj),                                // operation ID for conditional jump instructions
     .ot_out(dataread_ot),                                  // operand type
     .option_bits_out(dataread_option_bits),                // instruction option bits
-    .im2_bits_out(dataread_im2_bits),                      // constant bits from IM2 as extra operand        
+    .im4_bits_out(dataread_im4_bits),                      // constant bits from IM4 as extra operand        
     .trap_out(dataread_trap),                              // trap instruction detected
     .array_error_out(dataread_array_error),                // array index out of bounds
     .read_address_error_out(dataread_read_address_error),  // invalid read memory address
@@ -772,7 +785,6 @@ alu alu_inst (
     .clock_enable(clock_enable),                           // clock enable. Used when single-stepping
     .reset(system_reset),                                  // system reset. 
     .valid_in(dataread_valid & dataread_exe_unit[0]),      // data from previous stage ready
-    .stall_in(alu_stall_next | muldiv_stall_next | inout_stall_next),// pipeline is stalled
     .instruction_pointer_in(dataread_instruction_pointer), // address of current instruction
     .instruction_in(dataread_instruction),                 // current instruction, first word only
     .tag_val_in(dataread_tag_val),                         // instruction tag value    
@@ -783,8 +795,8 @@ alu alu_inst (
     .opx_in(dataread_opx),                                 // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     .opj_in(dataread_opj),                                 // operation ID for conditional jump instructions
     .ot_in(dataread_ot),                                   // operand type    
-    .option_bits_in(dataread_option_bits),                 // option bits from IM3 or mask
-    .im2_bits_in(dataread_im2_bits),                       // constant bits from IM2 as extra operand    
+    .option_bits_in(dataread_option_bits),                 // option bits from IM5
+    .im4_bits_in(dataread_im4_bits),                       // constant bits from IM4 as extra operand    
     
     // monitor result buses:
     .write_en1(bus1_write_en),                             // a result is written to bus 1
@@ -799,14 +811,14 @@ alu alu_inst (
     .operand1_in(dataread_operand1),                       // first operand or fallback value
     .operand2_in(dataread_operand2),                       // second operand value
     .operand3_in(dataread_operand3),                       // last operand value
-    .regmask_val_in(dataread_mask_val),                    // mask register
+    .mask_val_in(dataread_mask_val),                       // mask register
     .ram_data_in(data_memory_data),                        // memory operand from data memory
     .opr2_from_ram_in(dataread_opr2_from_ram),             // value of operand 2 comes from data memory
     .opr3_from_ram_in(dataread_opr3_from_ram),             // value of last operand comes from data memory
     .opr1_used_in(dataread_opr1_used),                     // opr1_val_in is needed
     .opr2_used_in(dataread_opr2_used),                     // opr2_val_in is needed
     .opr3_used_in(dataread_opr3_used),                     // opr3_val_in is needed    
-    .regmask_used_in(dataread_regmask_used),               // regmask_val_in is needed
+    .mask_used_in(dataread_mask_used),                     // mask_val_in is needed
     .valid_out(alu_valid),                                 // alu is active
     .register_write_out(alu_write_en),                     // write enable for bus 1 
     .register_a_out(alu_register_a),                       // register to write
@@ -828,16 +840,16 @@ mul_div muldiv_inst (
     .clock_enable(clock_enable),                           // clock enable. Used when single-stepping
     .reset(system_reset),                                  // system reset. 
     .valid_in(dataread_valid & (dataread_exe_unit[1] | dataread_exe_unit[2])), // data from previous stage ready
-    .stall_in(alu_stall_next | muldiv_stall_next | inout_stall_next),// pipeline is stalled
     .instruction_in(dataread_instruction[31:0]),           // current instruction, up to 3 words long
     .tag_val_in(dataread_tag_val),                         // instruction tag value    
-    .category_in(dataread_category),                       // 00: multiformat, 01: single format, 10: jump
-    .mask_alternative_in(dataread_mask_alternative),       // mask register and fallback register used for alternative purposes
-    .result_type_in(dataread_result_type),                 // type of result: 0: register, 1: system register, 2: memory, 3: other or nothing
-    .vector_in(dataread_vector),                           // vector instruction
+    //.category_in(dataread_category),                       // 00: multiformat, 01: single format, 10: jump
+    //.mask_alternative_in(dataread_mask_alternative),       // mask register and fallback register used for alternative purposes
+    //.result_type_in(dataread_result_type),                 // type of result: 0: register, 1: system register, 2: memory, 3: other or nothing
+    //.vector_in(dataread_vector),                           // vector instruction
     .opx_in(dataread_opx),                                 // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     .ot_in(dataread_ot),                                   // operand type    
-    .option_bits_in(dataread_option_bits),                 // option bits from IM3 or mask
+    .option_bits_in(dataread_option_bits),                 // option bits from IM4
+    .div_predict_in(addrgen_div_predict),                  // division instruction underway from address stage
     
     // monitor result buses:
     .write_en1(bus1_write_en),                             // a result is written to bus 1
@@ -852,26 +864,30 @@ mul_div muldiv_inst (
     .operand1_in(dataread_operand1),                       // first operand or fallback value
     .operand2_in(dataread_operand2),                       // second operand value
     .operand3_in(dataread_operand3),                       // last operand value
-    .regmask_val_in(dataread_mask_val),                    // mask register
+    .mask_val_in(dataread_mask_val),                       // mask register
     .ram_data_in(data_memory_data),                        // memory operand from data memory
     .opr2_from_ram_in(dataread_opr2_from_ram),             // value of operand 2 comes from data memory
     .opr3_from_ram_in(dataread_opr3_from_ram),             // value of last operand comes from data memory
     .opr1_used_in(dataread_opr1_used),                     // opr1_val_in is needed
     .opr2_used_in(dataread_opr2_used),                     // opr2_val_in is needed
     .opr3_used_in(dataread_opr3_used),                     // opr3_val_in is needed    
-    .regmask_used_in(dataread_regmask_used),               // regmask_val_in is needed
+    .mask_used_in(dataread_mask_used),                     // mask_val_in is needed
     
     .valid_out(muldiv_valid),                              // alu is active
     .register_write_out(muldiv_write_en),                  // write enable for bus 1 
     .register_a_out(muldiv_register_a),                    // register to write
     .result_out(muldiv_result),                            // 
     .tag_val_out(muldiv_tag),                              // instruction tag value
+    .predict_tag2_out(predict_tag2),                       // predict tag for bus2_value in next clock cycle
+    //.div_busy_out(muldiv_busy),                            // division unit busy
+    .div_out(muldiv_divout),                               // division unit busy
     .stall_out(muldiv_stall),                              // alu is waiting for an operand or not ready to receive a new instruction 
     .stall_next_out(muldiv_stall_next),                    // alu will be waiting in next clock cycle 
     .error_out(muldiv_error),                              // unknown instruction
     .error_parm_out(muldiv_error_parm),                    // wrong parameter for instruction
     .debug1_out(muldiv_debug1),                            // debug information
-    .debug2_out(muldiv_debug2)                             // debug information
+    .debug2_out(muldiv_debug2) //,                            // debug information
+    //.debug3_out(muldiv_debug3)                             // debug information
 );
 
 /***************************************************
@@ -893,11 +909,11 @@ in_out_ports in_out_ports_inst (
     .opx_in(dataread_opx),                                 // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     .opj_in(dataread_opj),                                 // operation ID for conditional jump instructions
     .ot_in(dataread_ot),                                   // operand type
-    .regmask_used_in(dataread_regmask_used),               // regmask_val_in is needed
+    .mask_used_in(dataread_mask_used),                     // mask_val_in is needed
     
     // connections to UART
     .uart_bit_in(uart_txd_in),                             // serial input
-    .uart_rts_in(uart_rts_in),                             // ready to send input
+    //.uart_rts_in(uart_rts_in),                             // ready to send input. not used
     
     // monitor result buses:
     .write_en1(bus1_write_en),                             // a result is written to bus 1
@@ -913,7 +929,7 @@ in_out_ports in_out_ports_inst (
     .operand1_in(dataread_operand1),                       // first operand or fallback value
     .operand2_in(dataread_operand2),                       // second operand
     .operand3_in(dataread_operand3),                       // last operand
-    .regmask_val_in(dataread_mask_val),                    // mask register
+    .mask_val_in(dataread_mask_val),                       // mask register
     .opr1_used_in(dataread_opr1_used),                     // opr1_val_in is needed
     
     // signals used for performance monitoring
@@ -962,6 +978,7 @@ debug_display debug_display_inst (
     .fetch_jump(fetch_jump),                               // jump instruction bypassing pipeline
     .fetch_call_e(fetch_call_e),                           // executing call instruction
     .fetch_return_e(fetch_return_e),                       // executing return instruction
+    .decoder_stall_predict(decoder_stall_predict),         // decoder stall next
     .registerread_stall_predict(registerread_stall_predict),// address generation stalled next
     .addrgen_stall_next(addrgen_stall_next),
     .dataread_stall_predict(dataread_stall_predict),       // alu stalled next
@@ -994,7 +1011,7 @@ debug_display debug_display_inst (
     .dataread_opr3_from_ram(dataread_opr3_from_ram),       // value of last operand comes from data ram 
 
     // from ALU    
-    //.writea1(bus1_register_a),                           // register to write
+    .writea1(bus1_register_a),                             // register to write
     .alu_result(bus1_value[31:0]),                         // 
     .write_tag1(bus1_tag),    
     .alu_valid(alu_valid | muldiv_valid | inout_valid),    // alu or in_out is ready
@@ -1002,10 +1019,12 @@ debug_display debug_display_inst (
     //.alu_nojump(alu_nojump),                             // jump instruction: jump not taken
     .alu_jump_pointer(alu_jump_pointer),
     
-    // from result buses
+    // from result bus 2
+    .writea2(bus2_register_a),                             // register to write
     .writeport2(bus2_value[31:0]),
     .write_en2(bus2_write_en),
-    .write_tag2(bus2_tag),    
+    .write_tag2(bus2_tag),
+    .muldiv_divout(muldiv_divout),
     
     // output to display
     .lcd_rs(lcd_rs),                                       // LCD RS pin

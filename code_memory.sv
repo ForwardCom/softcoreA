@@ -95,6 +95,9 @@ always_ff @(posedge clock) if (clock_enable) begin
     debug_out[23:0] <= write_address_hi;
     debug_out[28] <= write_address_valid;
     
+    debug_out[30] <= |(write_addr_in[2:0]);
+    debug_out[31] <= |write_enable;  // avoid warning for unused input
+    
 end
 
 endmodule

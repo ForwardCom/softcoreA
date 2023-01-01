@@ -14,7 +14,7 @@
 
 // Driver for 8 digit, 7 segment multiplexed display
 module seg7 (
-    input clock,                       // system clock 100 MHz
+    input clock,                       // system clock
     input [31:0] dispin,               // input, hexadecimal or BCD
     input [7:0] enable,                // enable each digit 
     output reg [7:0] segment7seg,      // segment output, active low

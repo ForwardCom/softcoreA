@@ -2,23 +2,23 @@
 // Engineer: Agner Fog
 // 
 // Create Date:    2020-05-30
-// Last modified:  2021-07-11
+// Last modified:  2022-12-25
 // Module Name:    decoder
 // Project Name:   ForwardCom soft core
 // Target Devices: Artix 7
 // Tool Versions:  Vivado v. 2020.1
 // License:        CERN-OHL-W v. 2 or later
 // Description:    Instruction decoder. Identifies instruction category and format, 
-// Loads register parameters. Generates multiple µops for push and pop instructions
+// Loads register parameters. Generates multiple µops for push and pop instructions.
+// Note that not all decoding is done here. There is further decoding in the 
+// address generator and dataread stages.
 // 
 //////////////////////////////////////////////////////////////////////////////////
 `include "defines.vh"
 
-// To do:
-// Push and pop instructions generate multiple µops in the decoder.
 
 module decoder (
-    input clock,                            // system clock (100 MHz)
+    input clock,                            // system clock
     input clock_enable,                     // clock enable. Used when single-stepping
     input reset,                            // system reset. 
     input valid_in,                         // data from fetch module ready
@@ -33,7 +33,7 @@ module decoder (
     output reg        valid_out,            // An instruction is ready for output to next stage
     output reg [`CODE_ADDR_WIDTH-1:0] instruction_pointer_out, // address of current instruction
     output reg [95:0] instruction_out,      // first word of instruction    
-    output reg        stall_out,            // Not ready to receive next instruction
+    output reg        stall_predict_out,    // Not ready to receive next instruction
     output reg [5:0]  tag_a_out,            // register number for instruction tag
     output reg [`TAG_WIDTH-1:0] tag_val_out,// instruction tag value
     output reg        tag_write_out,        // instruction tag write enable
@@ -54,13 +54,15 @@ module decoder (
     output reg [1:0]  immediate_field_out,  // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit
     output reg [1:0]  scale_factor_out,     // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
     output reg        index_limit_out,      // The field indicated by offset_field contains a limit to the index
+    output reg        multi_finish_out,     // An instruction generating multiple micro-ops is finishing    
+    output reg        error_out,            // Error in format or parameter
     output reg [31:0] debug1_out            // Temporary output for debugging purpose    
 );
 
 logic [1:0]  register_type;                 // 1: general purpose registers, 2: vector registers
 logic [1:0]  category;                      // 00: multiformat, 01: single format, 10: jump
-logic [1:0]  format;                        // 00: format A, 01: format E, 10: format B, 11: format C (format D never goes through decoder)
-
+logic [1:0]  format;                        // 00: format A, 01: format E, 10: format B, 11: 
+                                            // format C (format D never goes through decoder)
 logic [1:0]  num_operands;                  // number of source operands
 logic [2:0]  rs_status;                     // use of RS register
 logic [2:0]  rt_status;                     // use of RT register
@@ -69,30 +71,49 @@ logic [1:0]  rd_status;                     // use of RD register for input
 logic        mask_used;                     // 1: mask register is used
 logic        mask_options;                  // mask register may contain options
 logic [2:0]  fallback_use;                  // 0: no fallback, 1: same as first source operand, 2-4: RU, RS, RT 
-logic [1:0]  scale_factor;                  // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
-logic [1:0]  offset_field;                  // address offset. 0: none, 1: 8 bit, possibly scaled, 2: 16 bit, 3: 32 bit
+logic [1:0]  scale_factor;                  // 00: index is not scaled, 01: index is scaled by operand size, 
+                                            // 10: index is scaled by -1
+logic [1:0]  offset_field;                  // address offset. 0: none, 1: 8 bit, possibly scaled, 2: 16 bit,
+                                            // 3: 32 bit
 logic [1:0]  immediate_field;               // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit
 logic        index_limit;                   // The field indicated by offset_field contains a limit to the index   
 logic        broadcast;                     // Broadcast scalar memory operand or immediate operand
-logic [1:0]  result_type;                   // type of result: 0: register, 1: system register, 2: memory, 3: other or nothing
+logic [1:0]  result_type;                   // type of result: 0: register, 1: system register, 2: memory,
+                                            // 3: other or nothing
 logic        format_error;                  // unknown or unsupported instruction format
-logic        tag_write;                     // a tag is written
-logic        tag_error;                     // unpredicted tag error
 logic [1:0]  il;                            // instruction length
 logic [2:0]  mode;                          // instruction mode
 logic [5:0]  op1;                           // OP1 in instruction
 logic        M;                             // M bit
 logic [1:0]  op2;                           // OP2 in E format
 logic [2:0]  mode2;                         // mode2 in E format
-logic        valid;                         // valid output is ready
 logic        mask_alternative;              // mask register and fallback register used for alternative purposes
-integer signed count_inputs;                // calculate whether RD and RU are needed for input operands
 
+// variables for generating tag values
 reg [`TAG_WIDTH-1:0]      current_tag = 1;  // sequential instruction tags
 reg [(2**`TAG_WIDTH)-1:0] tag_used = 0;     // remember which tags are in use
-logic [`TAG_WIDTH-1:0]    next_tag;         // next instruction tags
+logic [`TAG_WIDTH-1:0]    max_tag;          // maximum tag value = (2**`TAG_WIDTH)-1
+logic [`TAG_WIDTH-1:0]    next1;            // next possible tag value after current_tag
+logic [`TAG_WIDTH-1:0]    next2;            // next possible tag value after next1
+logic [`TAG_WIDTH-1:0]    next3;            // next possible tag value after next2
+logic [`TAG_WIDTH-1:0]    next_tag;         // next instruction tag after skipping any tag in use
+logic [`TAG_WIDTH-1:0]    next_next_tag;    // 2. next instruction tag after skipping any tag in use
 
-// analyze instruction
+// variables for instructions generating multiple micro-ops
+reg          multi_op = 0;                  // the decoder is generating multiple micro-ops for current instructions
+logic        push_instruction;              // a push instruction is being decoded
+logic        pop_instruction;               // a pop instruction is being decoded
+logic        multi_first;                   // first clock cycle of a multi instruction
+logic        multi_last;                    // last clock cycle of a multi instruction
+logic        multi_last_next;               // multi instruction will end in next clock cycle
+logic [3:0]  pop_increment;                 // address increment/decrement for push/pop instructions
+logic        decrement_before;              // decrement pointer before write
+logic        increment_after;               // increment pointer after read or write
+logic        reverse_register_order;        // take last register first
+logic        push_pop_error;                // wrong register order or push/pop of stack pointer
+
+
+//  ***********  Analyze instruction  ***********
 always_comb begin
     il   = instruction_in[`IL];
     mode = instruction_in[`MODE];
@@ -107,9 +128,8 @@ always_comb begin
     mask_options = 0;    
     mask_alternative = 0;
     format_error = 0;
-    valid = valid_in & !reset;
 
-    // detect instruction format: A, B, C, or E (format D never comes to the decoder)
+    // *** detect instruction format: A, B, C, or E (format D never comes to the decoder) ***
     if (il == 0) begin // format 0.x
         if (mode == 1 || mode == 3 || mode == 7) begin
             format = `FORMAT_B;        // 0.1, 0.3, 0.7, 0.9
@@ -160,7 +180,8 @@ always_comb begin
         end
     end            
 
-    // detect category, 00: multiformat, 01: single format, 10: jump
+    // *** detect category ***
+    // 00: multiformat, 01: single format, 10: jump
     // (this differs from the category numbers in instruction_list.cvs)
     if (il == 0) begin // format 0.x
         category = `CAT_MULTI;
@@ -219,7 +240,7 @@ always_comb begin
         register_type = `REG_VECTOR;
     end
     
-    // count number of operands and mask use
+    // *** count number of operands and mask use ***
     if (category == `CAT_MULTI) begin
         if (op1 == `II_NOP) num_operands = 0;
         else if (op1 <= `II_ONE_OP) num_operands = 1;
@@ -232,11 +253,8 @@ always_comb begin
         if ((format == `FORMAT_E || format == `FORMAT_A) && (op1 == `II_COMPARE || op1 == `II_TEST_BIT || op1 == `II_TEST_BITS_AND || op1 == `II_TEST_BITS_OR)) begin
             mask_alternative = 1; // these instructions allow alternative use of mask register and fallback register
         end 
-        /* This is done in address generator:
-        if (format == `FORMAT_E && op1 >= `II_MUL_ADD_FLOAT16 && op1 <= `II_ADD_ADD) begin
-            options_im3 = 1;   // IM3 contains option bits, not shift count
-        end*/       
-    end else if (il == 1 && mode == 1) begin               // format 1.1 C (don't check M because there is no M bit in format C)
+    end else if (il == 1 && mode == 1) begin               // format 1.1 C 
+        // (don't check M because there is no M bit in format C)
         if (op1 <= `II_MOVE11_LAST) num_operands = 1;      // move
 
     end else if (il == 1 && mode == 2) begin               // format 1.2 A
@@ -258,7 +276,8 @@ always_comb begin
             num_operands = 3;                              // truth_tab3. 3 operands
         end
         if (mode2 == 7 && op1 == `II_MOVE_BITS && op2 == `II2_MOVE_BITS) begin 
-            num_operands = 3;                              // move_bits. 3 operands (Actually 5 operands: IM2 contains two 6-bit constants, IM3 contains the last operand)
+            num_operands = 3;                              // move_bits. 3 operands 
+            // (Actually 5 operands: IM4 contains two 6-bit constants, IM5 contains the last operand)
         end
 
     end else if (category == `CAT_JUMP) begin
@@ -273,7 +292,7 @@ always_comb begin
         end else if (il == 2 && mode == 5 && instruction_in[5:1] == 58 >> 1) begin
             num_operands = 1;
         end     
-        // else if ?
+        // else if
            
     end
         
@@ -281,7 +300,8 @@ always_comb begin
         if (instruction_in[`MASK] != 7) mask_used = 1;     // a mask register is used
     end
     
-    // detect use of registers and pointer, index, scale factor, offset, limit, fallback
+    
+    // *** detect use of registers and pointer, index, scale factor, offset, limit, fallback ***
     index_limit = 0;
     offset_field = `OFFSET_NONE;
     immediate_field = `IMMED_NONE;
@@ -292,7 +312,8 @@ always_comb begin
     broadcast = 0;
     fallback_use = mask_used ? `FALLBACK_SOURCE : `FALLBACK_NONE;
     
-    // detect format
+    
+    // ****** detect format ******
     if (il == 0) begin // format 0.x
         if ((mode == 0 && !M) || mode == 2) begin
             // format 0.0A, 0.2A: RD = f3(RD, RS, RT)
@@ -417,14 +438,14 @@ always_comb begin
     end else if (il == 2 && mode == 0 && !M) begin
         // format 2.0.x E
         if (mode2 == 0) begin
-            // format 2.0.0: RD = f3(RU, RT, [RS+IM2]).
+            // format 2.0.0: RD = f3(RU, RT, [RS+IM4]).
             rs_status = `REG_POINTER;
             offset_field = `OFFSET_2;
             if (num_operands > 1) rt_status = `REG_OPERAND;
             if (num_operands > 2 | mask_used | mask_alternative) ru_status = `REG_OPERAND;            
             if ((mask_used | mask_alternative) && num_operands < 3) fallback_use = `FALLBACK_RU;            
         end else if (mode2 == 1) begin
-            // format 2.0.1: RD = f3(RD, RU, [RS+RT+IM2]).
+            // format 2.0.1: RD = f3(RD, RU, [RS+RT+IM4]).
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             offset_field = `OFFSET_2;
@@ -435,7 +456,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;  ru_status = `REG_OPERAND;
             end
         end else if (mode2 == 2) begin
-            // format 2.0.2: RD = f3(RD, RU, [RS+RT*OS+IM2]).
+            // format 2.0.2: RD = f3(RD, RU, [RS+RT*OS+IM4]).
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             offset_field = `OFFSET_2;
@@ -444,7 +465,7 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_OPERAND;
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU;
         end else if (mode2 == 3) begin
-            // format 2.0.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM2
+            // format 2.0.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM4
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_OS;
@@ -453,12 +474,12 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_OPERAND;            
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU;
         end else if (mode2 == 5) begin
-            // format 2.0.5: RD = f3(RU, [RS+RT*OS+IM2], IM3).
+            // format 2.0.5: RD = f3(RU, [RS+RT*OS+IM4], IM5).
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_OS;
             offset_field = `OFFSET_2;
-            immediate_field = `IMMED_1;                    // immediate field IM3 extended into OP2
+            immediate_field = `IMMED_1;                    // immediate field IM5 extended into OP2
             if (num_operands > 2 | mask_used | mask_alternative) ru_status = `REG_OPERAND;
             if ((mask_used | mask_alternative) && num_operands < 3) fallback_use = `FALLBACK_RU;            
         end else if (mode2 == 6) begin
@@ -470,7 +491,7 @@ always_comb begin
             if ((mask_used | mask_alternative) && num_operands < 3) fallback_use = `FALLBACK_RU;            
         end else if (mode2 == 7) begin
             immediate_field = `IMMED_2;
-            // format 2.0.7: RD = f3(RS, RT, IM2 << IM3).
+            // format 2.0.7: RD = f3(RS, RT, IM4 << IM5).
             if (num_operands > 1) rt_status = `REG_OPERAND;
             if (num_operands > 2) rs_status = `REG_OPERAND;
             if ((mask_used | mask_alternative) && num_operands < 3) begin
@@ -482,7 +503,7 @@ always_comb begin
         end
         
     end else if (il == 2 && mode == 1 && !M) begin
-        // format 2.1A. RD = f3(RD, RT, [RS+IM2]).
+        // format 2.1A. RD = f3(RD, RT, [RS+IM6]).
         rs_status = `REG_POINTER;
         offset_field = `OFFSET_3;
         scale_factor = `SCALE_NONE;
@@ -493,7 +514,7 @@ always_comb begin
     end else if (il == 2 && mode == 2) begin
         // format 2.2.x E
         if (mode2 == 0) begin
-            // format 2.2.0: RD = f3(RD, RU, [RS+IM2]). broadcast
+            // format 2.2.0: RD = f3(RD, RU, [RS+IM4]). broadcast
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
             offset_field = `OFFSET_2;
@@ -502,7 +523,7 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_VECTOR;
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU;
         end else if (mode2 == 1) begin
-            // format 2.2.1: RD = f3(RD, RU, [RS+IM2]). length RT
+            // format 2.2.1: RD = f3(RD, RU, [RS+IM4]). length RT
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
             offset_field = `OFFSET_2;
@@ -510,7 +531,7 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_VECTOR;
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU; 
         end else if (mode2 == 2) begin
-            // format 2.2.2: RD = f3(RD, RU, [RS+RT*OS+IM2]).. scalar
+            // format 2.2.2: RD = f3(RD, RU, [RS+RT*OS+IM4]).. scalar
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             offset_field = `OFFSET_2;
@@ -519,7 +540,7 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_VECTOR;
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU; 
         end else if (mode2 == 3) begin
-            // format 2.2.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM2
+            // format 2.2.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM4
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_OS;
@@ -528,7 +549,7 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_VECTOR;
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU;
         end else if (mode2 == 4) begin
-            // format 2.2.4: RD = f3(RD, RU, [RS-RT+IM2]).
+            // format 2.2.4: RD = f3(RD, RU, [RS-RT+IM4]).
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_MINUS;
@@ -537,11 +558,11 @@ always_comb begin
             if (num_operands > 2) rd_status = `REG_VECTOR;                    
             if (mask_used && num_operands == 1) fallback_use = `FALLBACK_RU;
         end else if (mode2 == 5) begin
-            // format 2.2.5: RD = f3(RU, [RS+IM2], IM3).        
+            // format 2.2.5: RD = f3(RU, [RS+IM4], IM5).        
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
             offset_field = `OFFSET_2;
-            immediate_field = `IMMED_1;                    // immediate field IM3 extended into OP2
+            immediate_field = `IMMED_1;                    // immediate field IM5 extended into OP2
             if (num_operands > 2 || mask_used) ru_status = `REG_OPERAND;
             if ((mask_used | mask_alternative) && num_operands < 3) begin
                 fallback_use = `FALLBACK_RU;  ru_status = `REG_VECTOR;
@@ -556,7 +577,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU; ru_status = `REG_VECTOR;
             end
         end else if (mode2 == 7) begin
-            // format 2.2.7: RD = f3(RS, RT, IM2 << IM3).
+            // format 2.2.7: RD = f3(RS, RT, IM4 << IM5).
             immediate_field = `IMMED_2;                    // immediate operand 
             if (num_operands > 1) rt_status = `REG_VECTOR;
             if (num_operands > 2) rs_status = `REG_VECTOR;
@@ -566,14 +587,14 @@ always_comb begin
         end
         
     end else if (il == 2 && mode == 3) begin
-        // format 2.3A: RD = f3(RS, RT, IM2).
+        // format 2.3A: RD = f3(RS, RT, IM6).
         immediate_field = `IMMED_3;                        // immediate operand
         if (num_operands > 1) rt_status = `REG_VECTOR;
         if (num_operands > 2 || mask_used) rs_status = `REG_VECTOR;
         if (mask_used && num_operands < 3)  fallback_use = `FALLBACK_RS;
         
     end else if (il == 2 && mode == 4) begin
-        // format 2.4A: RD = f2(RD, [RS+IM2]). length=RT.
+        // format 2.4A: RD = f2(RD, [RS+IM6]). length=RT.
         rs_status = `REG_POINTER;
         if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
         offset_field = `OFFSET_3;
@@ -592,7 +613,7 @@ always_comb begin
         end else if (op1 == 1) begin
             // format 2.5.1B: jump with a register source operand and a 16-bit immediate operand
             rs_status = register_type;
-            immediate_field = `IMMED_2;                    // 16 bit in lower half of IM2            
+            immediate_field = `IMMED_2;                    // 16 bit in lower half of IM6            
         end else if (op1 == 2) begin
             // format 2.5.2B: jump with register (RD), memory operand w 16 bit address, 16 bit jump offset 
             rd_status = register_type;
@@ -634,7 +655,7 @@ always_comb begin
         end        
         
     end else if (il == 2 && mode == 6) begin
-        // format 2.6A: RD = f3(RS, RT, IM2).
+        // format 2.6A: RD = f3(RS, RT, IM6).
         immediate_field = `IMMED_3;
         if (num_operands > 1) rt_status = `REG_VECTOR;
         if (num_operands > 2 || mask_used) rs_status = `REG_VECTOR;
@@ -645,7 +666,7 @@ always_comb begin
         format_error = 1;
         
     end else if (il == 2 && mode == 0 && M) begin
-        // format 2.8A: RD = f3(RS, RT, IM2).
+        // format 2.8A: RD = f3(RS, RT, IM6).
         immediate_field = `IMMED_3;    
         if (num_operands > 1) rt_status = `REG_OPERAND;
         if (num_operands > 2 || mask_used) rs_status = `REG_OPERAND;
@@ -654,7 +675,7 @@ always_comb begin
         end
         
     end else if (il == 2 && mode == 1 && M) begin
-        // format 2.9A: RD = f3(RS, RT, IM2).
+        // format 2.9A: RD = f3(RS, RT, IM6).
         if (op1 == `II_ADDRESS_29) begin
             offset_field = `OFFSET_3;                      // address instruction
             rs_status = `REG_POINTER;
@@ -671,7 +692,7 @@ always_comb begin
     end else if (il == 3 && mode == 0 && !M) begin
         // format 3.0.x E
         if (mode2 == 0) begin
-            // format 3.0.0: RD = f3(RU, RS, [RS+IM4]).
+            // format 3.0.0: RD = f3(RU, RS, [RS+IM7]).
             rs_status = `REG_POINTER;
             offset_field = `OFFSET_3;
             if (num_operands > 1) rt_status = `REG_OPERAND;
@@ -680,7 +701,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;  ru_status = `REG_OPERAND;
             end
         end else if (mode2 == 2) begin
-            // format 3.0.2: RD = f3(RD, RU, [RS+RT*OS+IM4]).
+            // format 3.0.2: RD = f3(RD, RU, [RS+RT*OS+IM7]).
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             offset_field = `OFFSET_3;
@@ -691,7 +712,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;
             end
         end else if (mode2 == 3) begin
-            // format 3.0.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM4         
+            // format 3.0.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM7
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_OS;
@@ -702,7 +723,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;
             end
         end else if (mode2 == 5) begin
-            // format 3.0.5: RD = f3(RU, [RS+RT*OS+IM2], IM4).         
+            // format 3.0.5: RD = f3(RU, [RS+RT*OS+IM4], IM7).         
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_OS;
@@ -713,7 +734,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU; ru_status = `REG_OPERAND;
             end
         end else if (mode2 == 7) begin
-            // format 3.0.7: RD = f3(RS, RT, IM4 << IM2).         
+            // format 3.0.7: RD = f3(RS, RT, IM7 << IM4).         
             immediate_field = `IMMED_3;
             if (num_operands > 1) rt_status = `REG_OPERAND;
             if (num_operands > 2 || mask_used) rs_status = `REG_OPERAND;
@@ -753,7 +774,7 @@ always_comb begin
     end else if (il == 3 && mode == 2) begin
         // format 3.2.x E
         if (mode2 == 0) begin 
-            // format 3.2.0: RD = f3(RD, RU, [RS+IM4]).. broadcast
+            // format 3.2.0: RD = f3(RD, RU, [RS+IM7]).. broadcast
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
             offset_field = `OFFSET_3;
@@ -764,7 +785,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;
             end
         end else if (mode2 == 1) begin 
-            // format 3.2.1: RD = f3(RD, RU, [RS+IM4]). Length RT
+            // format 3.2.1: RD = f3(RD, RU, [RS+IM7]). Length RT
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
             offset_field = `OFFSET_3;
@@ -774,7 +795,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;
             end
         end else if (mode2 == 2) begin 
-            // format 3.2.2: RD = f3(RD, RU, [RS+RT*OS+IM4]).. scalar
+            // format 3.2.2: RD = f3(RD, RU, [RS+RT*OS+IM7]).. scalar
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             offset_field = `OFFSET_3;
@@ -785,7 +806,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;
             end
         end else if (mode2 == 3) begin 
-            // format 3.2.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM4
+            // format 3.2.3: RD = f3(RD, RU, [RS+RT*OS]).. limit IM7
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_INDEX;
             scale_factor = `SCALE_OS;
@@ -796,7 +817,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;
             end
         end else if (mode2 == 5) begin 
-            // format 3.2.5: RD = f3(RU, [RS+IM2], IM4). Length=RT.
+            // format 3.2.5: RD = f3(RU, [RS+IM4], IM7). Length=RT.
             rs_status = `REG_POINTER;
             if (instruction_in[`RT] != 5'H1F) rt_status = `REG_LENGTH;
             offset_field = `OFFSET_2;
@@ -806,7 +827,7 @@ always_comb begin
                 fallback_use = `FALLBACK_RU;  ru_status = `REG_VECTOR;
             end
         end else if (mode2 == 7) begin 
-            // format 3.2.7: RD = f3(RS, RT, IM4).
+            // format 3.2.7: RD = f3(RS, RT, IM7).
             immediate_field = `IMMED_3;
             if (num_operands > 1) rt_status = `REG_VECTOR;
             if (num_operands > 2 || mask_used) rs_status = `REG_VECTOR;
@@ -819,13 +840,13 @@ always_comb begin
         end
         
     end else if (il == 3 && mode == 3) begin 
-        // format 3.3A: RD = f3(RS, RT, IM2-3).
+        // format 3.3A: RD = f3(RS, RT, IM6-7).
         immediate_field = `IMMED_3;
         if (num_operands > 1) rt_status = `REG_VECTOR;
         if (num_operands > 2 || mask_used) rs_status = `REG_VECTOR;
         if (mask_used && num_operands < 3) fallback_use = `FALLBACK_RS;
     end else if (il == 3 && mode == 0 && M) begin 
-        // format 3.8A: RD = f3(RS, RT, IM2-3).
+        // format 3.8A: RD = f3(RS, RT, IM6-7).
         immediate_field = `IMMED_3;
         if (num_operands > 1) rt_status = `REG_OPERAND;
         if (num_operands > 2 || mask_used) rs_status = `REG_OPERAND;
@@ -833,7 +854,7 @@ always_comb begin
     end
     
     
-    // detect type of result
+    // ****** detect type of result ******
     result_type = `RESULT_REG;                             // default result type
     if (category == `CAT_MULTI && op1 == `II_STORE) begin
         result_type = `RESULT_MEM;                         // store instruction
@@ -846,7 +867,7 @@ always_comb begin
         result_type = `RESULT_SYS;                         // write system registers
     end else if (il == 1 && mode == 0 && M && op1 == `II_OUTPUT_18) begin
         result_type = `RESULT_NONE;                        // output, format 1.8
-    end else if (category == `CAT_MULTI && op1 == `II_NOP) begin
+    end else if (category == `CAT_MULTI & (op1 == `II_NOP | op1 == `II_PREFETCH)) begin
         result_type = `RESULT_NONE;                        // nop        
     end else if (il == 1 && mode == 2 && op1 == `II_OUTPUT_18) begin
         result_type = `RESULT_NONE;                        // output, format 1.2
@@ -862,99 +883,234 @@ always_comb begin
 end
 
 
-// update tags
+//  ***********  Decode instructions that generate multiple micro-ops  ***********
 always_comb begin
-    next_tag = 0;
-    tag_write = 0;
-    if (tag_used[current_tag]) begin                       // tag in use should have been predicted
-        tag_error = 1;
-    end else begin
-        tag_error = 0;
-    end
-
-    // instructions without a result register need a tag in addressgenerator to distinguish instructions
-    if (valid & !stall_in) begin
-        // needs a new tag
-        tag_write = 1;
-        if (&current_tag) next_tag = 1;                    // skip value 0
-        else next_tag = current_tag + 1;
-    end else begin
-        next_tag = current_tag;
-    end
+    push_instruction = il == 1 & op1 == 56 & ((mode == 0 & M) | mode == 3); // push instruction generated
+    pop_instruction  = il == 1 & op1 == 57 & ((mode == 0 & M) | mode == 3); // pop instruction generated
+    case (instruction_in[`OT2])   // determine address increment or decrement
+        0: pop_increment = 1;
+        1: pop_increment = 2;
+        2: pop_increment = 4;
+        3: pop_increment = 8;
+    endcase
+    
+    decrement_before = push_instruction & !instruction_in[7]; // decrement pointer first, then write
+    increment_after = pop_instruction | (push_instruction & instruction_in[7]); // increment pointer after
+    reverse_register_order = pop_instruction & !instruction_in[6]; // pop last register first
+    multi_first = (push_instruction | pop_instruction) & !multi_op; // first cycle of multi instruction
+    multi_last = multi_op & !reverse_register_order & instruction_out[`RD] == instruction_in[`RT]
+    | multi_op & reverse_register_order & instruction_out[`RD] == instruction_in[`RS];
+    
+    multi_last_next = multi_first & instruction_in[`RT] == instruction_in[`RS]
+    | multi_op & !reverse_register_order & instruction_out[`RD] == instruction_in[`RT] - 1
+    | multi_op & reverse_register_order & instruction_out[`RD] == instruction_in[`RS] + 1;
+    
+    push_pop_error = multi_first & instruction_in[`RT] < instruction_in[`RS]
+    | multi_op & instruction_out[`RD] == instruction_out[`RS];
 end
 
 
-// send tag to register file
-always_ff @(posedge clock) if (clock_enable) begin
-    if (tag_write && !stall_in) begin
-        tag_write_out <= result_type == `RESULT_REG || result_type == `RESULT_SYS;
-        tag_a_out <= {result_type[0], instruction_in[`RD]};
-        tag_val_out <= current_tag;
-        current_tag <= next_tag;        
-        if (tag_used[next_tag]) begin
-            stall_out <= 1;                                // other reasons for stall out?
-        end else begin
-            stall_out <= 0;
+// *** update tags ***
+// All instructions need a tag in order to distinguish instructions
+always_comb begin
+    max_tag = ~(`TAG_WIDTH'b0);   // maximum tag is all ones (5'b11111)
+    
+    // next possible tag value
+    next1 = current_tag + 1;
+    next2 = current_tag + 2;
+    next3 = current_tag + 3;
+    // skip tag value 0:
+    if (current_tag == max_tag) begin
+        next1 = 1;
+        next2 = 2;
+        next3 = 3;
+    end else if (current_tag == max_tag - 1) begin 
+        next2 = 1;
+        next3 = 2;
+    end else if (current_tag == max_tag - 2) begin 
+        next3 = 1;
+    end
+    
+    /* A tag value may be occupied by a long-latency instruction started in a previous cycle.
+    This code will skip an occupied tag value. Two consecutive occupied tag values will cause
+    a stall until one tag is freed. This can only happen if two long-latency instructions are
+    executed in parallel. e.g integer division and vector division happening in parallel.
+    */
+    if (valid_in | multi_op) begin
+        next_tag = next1;
+        next_next_tag = next2;
+        // skip tag values that are occupied 
+        if (tag_used[next1]) begin
+            next_tag = next2;
+            next_next_tag = next3;
+        end else if (tag_used[next2]) begin
+            next_next_tag = next3;
         end
     end else begin
-        tag_write_out <= 0;
-        stall_out <= 0;
-    end        
-
-    if (reset) current_tag <= 1;
-end
-
-    
-// other outputs
-always_ff @(posedge clock) if (clock_enable) begin
-    if (reset) valid_out <= 0;
-    else if (!stall_in) valid_out <= valid_in;    
-    
-    if (!stall_in) begin
-        instruction_pointer_out <= instruction_pointer_in;
-        instruction_out <= instruction_in;
-        vector_out <= register_type == `REG_VECTOR;
-        category_out <= category;
-        format_out <= format;
-        rs_status_out <= rs_status;
-        rt_status_out <= rt_status;
-        ru_status_out <= ru_status;
-        rd_status_out <= rd_status;
-        mask_status_out <= (mask_used || mask_options) ? register_type : `REG_UNUSED;
-        mask_options_out <= mask_options;
-        mask_alternative_out <= mask_alternative;
-        fallback_use_out <= fallback_use;
-        num_operands_out <= num_operands;
-        result_type_out <= result_type;
-        offset_field_out <= offset_field;
-        immediate_field_out <= immediate_field;
-        scale_factor_out <= scale_factor;
-        index_limit_out <= index_limit;
-        
-        // debug output
-        debug1_out[1:0]   <= il;
-        debug1_out[6:4]   <= mode;
-        debug1_out[8]     <= M;
-        debug1_out[14:12] <= mode2;        
-        debug1_out[17:16] <= offset_field;
-        debug1_out[21:20] <= immediate_field;
-         
+        next_tag = 0;
+        next_next_tag = 0;
     end
 end
 
 
-// update list of tags in use
+// ****** update list of tags in use ******
 genvar i;   // generation loop for all bits in tag_used    
 for (i=0; i < (2**`TAG_WIDTH); i++) begin
-    always_ff @(posedge clock) if (clock_enable && !stall_in) begin
+    //always_ff @(posedge clock) if (clock_enable && !stall_in) begin
+    always_ff @(posedge clock) if (clock_enable) begin
         if (reset) begin
             tag_used[i] <= 0;
         end else if (i == current_tag) begin
             tag_used[i] <= 1;
-        end else if ((write_en1 && i == write_tag1) || (write_en2 && i == write_tag2)) begin
+        end else if (i == write_tag1 | i == write_tag2) begin
             tag_used[i] <= 0;
         end
     end
 end
    
+    
+// ******      outputs      ******
+
+always_ff @(posedge clock) if (clock_enable) begin
+    if (reset) valid_out <= 0;
+    else if (!stall_in) valid_out <= valid_in | multi_op;    
+    multi_finish_out <= 0;
+    
+    // send tag to register file
+    if ((valid_in | multi_op) & !stall_in & !reset) begin
+        // tag_write_out done below
+        tag_a_out <= {result_type[0], instruction_in[`RD]};
+        tag_val_out <= current_tag;        
+        current_tag <= next_tag;  // update current tag      
+    end        
+
+    // predict if a tag is not available in next clock cycle
+    if (tag_used[next_tag] | tag_used[next_next_tag]) begin
+        stall_predict_out <= 1;
+    end else begin
+        stall_predict_out <= 0;
+    end 
+    
+    // *** output instruction code ***
+    if (!stall_in) begin
+        if (!multi_op) begin
+            instruction_pointer_out <= instruction_pointer_in;
+            instruction_out <= instruction_in;
+            vector_out <= register_type == `REG_VECTOR;
+            category_out <= category;
+            format_out <= format;
+            rs_status_out <= rs_status;
+            rt_status_out <= rt_status;
+            ru_status_out <= ru_status;
+            rd_status_out <= rd_status;
+            mask_status_out <= (mask_used || mask_options) ? register_type : `REG_UNUSED;
+            mask_options_out <= mask_options;
+            mask_alternative_out <= mask_alternative;
+            fallback_use_out <= fallback_use;
+            num_operands_out <= num_operands;
+            result_type_out <= result_type;
+            offset_field_out <= offset_field;
+            immediate_field_out <= immediate_field;
+            scale_factor_out <= scale_factor;
+            index_limit_out <= index_limit;
+            if (valid_in) begin
+                tag_write_out <= result_type == `RESULT_REG || result_type == `RESULT_SYS;
+            end else begin
+                tag_write_out <= 0;            
+            end            
+        end
+
+        // modify instruction_out if multi-op instruction
+        if ((push_instruction | pop_instruction) & multi_first & instruction_pointer_in[2:0] != instruction_pointer_out[2:0]) begin  // generate read or write instruction
+            multi_op <= 1;
+            // make instruction for read/write register RD with pointer RS, offset IM4, format 2.0.0E
+            instruction_out[`IL] <= 2;
+            instruction_out[`MODE] <= 0;
+            instruction_out[`MODE2] <= 0;
+            instruction_out[`RD] <= reverse_register_order ? instruction_in[`RT] : instruction_in[`RS];
+            instruction_out[`RS] <= instruction_in[`RD]; // stack pointer
+            instruction_out[`OP2] <= 0;
+            instruction_out[`IM4] <= decrement_before ? -pop_increment : 0;
+            instruction_out[`M] <= 0;
+            instruction_out[`MASK] <= 7;            
+            category_out <= `CAT_MULTI;
+            format_out <= `FORMAT_E;
+            rs_status_out <= `REG_POINTER;
+            rt_status_out <= `REG_UNUSED;
+            ru_status_out <= `REG_UNUSED;
+            rd_status_out <= `REG_OPERAND;
+            num_operands_out <= 1;
+            offset_field_out <= `OFFSET_2;
+            immediate_field_out <= `IMMED_NONE;
+            if (push_instruction) begin
+                instruction_out[`OP1] <= `II_STORE;
+                result_type_out <= `RESULT_MEM;
+                tag_write_out <= 0;
+            end else begin
+                instruction_out[`OP1] <= `II_MOVE;
+                result_type_out <= `RESULT_REG;
+                tag_write_out <= 1;
+            end
+        end else if (multi_op & !multi_last) begin
+            // increment or decrement address
+            instruction_out[`IM4] <= decrement_before ? instruction_out[`IM4] - pop_increment : instruction_out[`IM4] + pop_increment;
+            // increment or decrement register
+            instruction_out[`RD] <= reverse_register_order ? instruction_out[`RD] - 1 : instruction_out[`RD] + 1;
+        end else if (multi_last) begin
+            // make instruction to add or subtract to stack pointer, format 2.0.7E
+            instruction_out[`MODE2] <= 7;
+            instruction_out[`RT] <= instruction_in[`RD];
+            instruction_out[`RD] <= instruction_in[`RD];
+            instruction_out[`OP1] <= `II_ADD;
+            instruction_out[`OT] <= `OT_INT64;
+            rs_status_out <= `REG_UNUSED;
+            rt_status_out <= `REG_OPERAND;
+            num_operands_out <= 2;
+            result_type_out <= `RESULT_REG;
+            tag_write_out <= 1;
+            offset_field_out <= `OFFSET_NONE;
+            immediate_field_out <= `IMMED_2;
+            if (increment_after) begin
+                // pointer offset in IM4 becomes addend. decrement_before has subtracted one time too many
+                instruction_out[`IM4] <= instruction_out[`IM4] + pop_increment;
+            end
+            instruction_out[`IM5] <= 0;
+            multi_op <= 0;
+            //multi_finish_out <= 1;
+        end        
+        if ((multi_first | multi_op) & multi_last_next) multi_finish_out <= 1;
+        error_out <= (format_error | push_pop_error) & valid_in;
+    end
+    
+    if (reset) begin
+        multi_op <= 0;
+        current_tag <= 1;
+    end
+    
+    
+    // debug output
+    debug1_out[3:0]   <= current_tag;
+    debug1_out[7:4]   <= next_tag;
+    debug1_out[11:8]  <= next_next_tag;
+    debug1_out[12]    <= tag_used[next_tag] ;
+    debug1_out[13]    <= tag_used[next_next_tag] ;
+    
+    debug1_out[16]    <= push_instruction;
+    debug1_out[17]    <= pop_instruction;
+    debug1_out[18]    <= 0;
+    debug1_out[19]    <= push_pop_error;
+    
+    debug1_out[20]    <= multi_first;
+    debug1_out[21]    <= multi_last;
+    debug1_out[22]    <= multi_last_next;
+    debug1_out[23]    <= multi_op;
+    
+    debug1_out[24]    <= decrement_before;
+    debug1_out[25]    <= increment_after;
+    debug1_out[26]    <= reverse_register_order;
+    
+    debug1_out[31:28] <= pop_increment;  
+    
+end
+
 endmodule

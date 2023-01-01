@@ -18,7 +18,7 @@ module lcd
   #(parameter numrows = 8,               // number of lines of combined displays (2 - 8)
     parameter numcolumns = 20,           // number of characters per line
     parameter rows_per_display = 4)      // number of rows per display unit
- (input       clock,                     // system clock 100 MHz
+ (input       clock,                     // system clock
   input       reset,                     // reset and clear
   input [4:0] x,                         // column number (0 = left)
   input [2:0] y,                         // row number (0 = top)

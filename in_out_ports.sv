@@ -2,7 +2,7 @@
 // Engineer: Agner Fog
 // 
 // Create Date:    2020-11-16
-// Last modified:  2021-08-03
+// Last modified:  2022-12-08
 // Module Name:    in_out_ports
 // Project Name:   ForwardCom soft core
 // Target Devices: Artix 7
@@ -68,7 +68,7 @@ Performance counter registers 1 - 5, and 16
 `include "defines.vh"
 
 module in_out_ports (
-    input clock,                            // system clock (100 MHz)
+    input clock,                            // system clock
     input clock_enable,                     // clock enable. Used when single-stepping
     input reset,                            // system reset
     input valid_in,                         // data from previous stage ready
@@ -82,9 +82,9 @@ module in_out_ports (
     input [6:0]  opx_in,                    // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     input [5:0]  opj_in,                    // operation ID for conditional jump instructions
     input [2:0]  ot_in,                     // operand type
-    input        regmask_used_in,           // mask register is used
+    input        mask_used_in,           // mask register is used
     input uart_bit_in,                      // serial input
-    input uart_rts_in,                      // ready to send input (not used)
+    //input uart_rts_in,                      // ready to send input (not used). Must add set_property -dict {PACKAGE_PIN E5 IOSTANDARD LVCMOS33} [get_ports uart_rts_in] to .xdc file if used
      
     // monitor result buses:
     input write_en1,                        // a result is written to writeport1
@@ -100,7 +100,7 @@ module in_out_ports (
     input [`RB:0] operand1_in,              // first register operand RD or RU
     input [`RB:0] operand2_in,              // second register operand RS
     input [`RB:0] operand3_in,              // last register operand RT
-    input [`MASKSZ:0] regmask_val_in,       // mask register
+    input [`MASKSZ:0] mask_val_in,          // mask register
     input         opr1_used_in,             // operand1_in is needed
     
     // signals used for performance monitoring and error detection
@@ -137,7 +137,7 @@ module in_out_ports (
 logic [`RB1:0] operand1;                    // first register operand RD or RU. bit `RB is 1 if invalid 
 logic [`RB1:0] operand2;                    // second register operand RS. bit `RB is 1 if invalid
 logic [`RB1:0] operand3;                    // last register operand RT. bit `RB is 1 if invalid
-logic [`MASKSZ:0] regmask_val;              // mask register
+logic [`MASKSZ:0] mask_val;                 // mask register
 logic [1:0]  otout;                         // operand type for output
 logic [`RB1:0] result;                      // result for output
 logic [6:0]  opx;                           // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
@@ -222,22 +222,22 @@ always_comb begin
     rs = instruction_in[`RS];
     rd = instruction_in[`RD];
     
-    regmask_val = 0;
-    if (regmask_val_in[`MASKSZ]) begin      // value missing
-        if (write_en1 && regmask_val_in[`TAG_WIDTH-1:0] == write_tag1_in) begin
-            regmask_val = writeport1_in;    // obtained from result bus 1 (which may be my own output)
-        end else if (write_en2 && regmask_val_in[`TAG_WIDTH-1:0] == write_tag2_in) begin
-            regmask_val = writeport2_in[(`MASKSZ-1):0]; // obtained from result bus 2
+    mask_val = 0;
+    if (mask_val_in[`MASKSZ]) begin      // value missing
+        if (write_en1 && mask_val_in[`TAG_WIDTH-1:0] == write_tag1_in) begin
+            mask_val = writeport1_in;    // obtained from result bus 1 (which may be my own output)
+        end else if (write_en2 && mask_val_in[`TAG_WIDTH-1:0] == write_tag2_in) begin
+            mask_val = writeport2_in[(`MASKSZ-1):0]; // obtained from result bus 2
         end else begin
-            if (regmask_used_in & valid_in) begin
+            if (mask_used_in & valid_in) begin
                 stall = 1;                  // operand not ready
-                if (regmask_val_in[`TAG_WIDTH-1:0] != predict_tag1_in && regmask_val_in[`TAG_WIDTH-1:0] != predict_tag2_in) begin
+                if (mask_val_in[`TAG_WIDTH-1:0] != predict_tag1_in && mask_val_in[`TAG_WIDTH-1:0] != predict_tag2_in) begin
                     stall_next = 1;         // operand not ready in next clock cycle
                 end
             end                 
         end
     end else begin                          // value available
-        regmask_val = regmask_val_in[(`MASKSZ-1):0];
+        mask_val = mask_val_in[(`MASKSZ-1):0];
     end    
         
     operand1 = 0;    
@@ -299,7 +299,7 @@ always_comb begin
         operand3 = operand3_in[`RB1:0];
     end*/
     
-    mask_off = regmask_used_in && regmask_val[`MASKSZ] == 0 && regmask_val[0] == 0 && !mask_alternative_in;
+    mask_off = mask_used_in && mask_val[`MASKSZ] == 0 && mask_val[0] == 0 && !mask_alternative_in;
      
     opx = opx_in;                           // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     otout = ot_in[1:0];                     // operand type for output
@@ -485,13 +485,18 @@ always_comb begin
     // output for debugger
     debug_bits[14:8] = opx;
     
+    
+    
     debug_bits[16] = stall;                  // waiting for operands
     debug_bits[17] = stall_next;             // will be waiting for operands in next clock cycle    
     debug_bits[19] = error;                  // unknown or illegal operation
     debug_bits[20] = valid_in;               // inout is enabled
     debug_bits[21] = fifo_buffer_input_read_next;
     debug_bits[22] = fifo_buffer_output_write;    
-    debug_bits[31:24] = port_address[7:0];
+    //debug_bits[31:24] = port_address[7:0];
+    debug_bits[31:24] = fifo_buffer_input_num;
+    //debug_bits[15] = &instruction_in & ot_in[2] & operand3_in[`RB];         // avoid warning for unconnected input
+
     /*
     debug_bits[23:20] = error_number_in;
     debug_bits[31:24] = num_unknown_instruction[7:0];
@@ -507,14 +512,12 @@ always_ff @(posedge clock) if (clock_enable) begin
         // note: the FPGA has no internal tri-state buffers. We need to simulate result bus by or'ing outputs 
         result_out <= 0;
         register_a_out <= 0;
-        tag_val_out <= 0;
 
     // stall_in must disable the output to avoid executing the same instruction twice)
     end else if (stall || stall_in || result_type_in != `RESULT_REG) begin
         register_write_out <= 0;
         result_out <= 0;
         register_a_out <= 0;
-        tag_val_out <= 0;
 
     end else begin
         // register result from input instruction or read_capabilities, etc.
@@ -526,8 +529,11 @@ always_ff @(posedge clock) if (clock_enable) begin
         endcase
         register_write_out <= ~reset;
         register_a_out <= {1'b0,rd};
-        tag_val_out <= tag_val_in;
     end
+    
+    if (valid_in & !stall) tag_val_out <= tag_val_in;
+    else tag_val_out <= 0;
+    
     
     if (result_type_in == `RESULT_SYS) begin
         // write system register

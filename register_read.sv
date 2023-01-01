@@ -2,7 +2,7 @@
 // Engineer: Agner Fog
 // 
 // Create Date: 2020-06-01
-// Last modified: 2021-02-16
+// Last modified: 2022-11-25
 // Module Name: Register read
 // Project Name: ForwardCom soft core
 // Target Devices: Artix 7
@@ -23,7 +23,7 @@
 
 
 module register_read (
-    input clock,                            // system clock (100 MHz)
+    input clock,                            // system clock
     input clock_enable,                     // clock enable. Used when single-stepping
     input reset,                            // system reset. 
     input valid_in,                         // data from fetch module ready
@@ -48,7 +48,7 @@ module register_read (
     input [1:0]  offset_field_in,           // address offset. 0: none, 1: 8 bit, possibly scaled, 2: 16 bit, 3: 32 bit
     input [1:0]  immediate_field_in,        // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit
     input [1:0]  scale_factor_in,           // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
-    input        index_limit_in,            // IM2 or IM3 contains a limit to the index
+    input        index_limit_in,            // IM4 or IM7 contains a limit to the index
     
     // ports for register write
     input [`RB1:0] writeport1,              // write port 1
@@ -60,6 +60,8 @@ module register_read (
     input write_en2,
     input [`TAG_WIDTH-1:0] write_tag2,
     input [5:0] debug_reada,                // read port for debugger
+    input [`TAG_WIDTH-1:0] predict_tag1_in, // tag on result bus 1 in next clock cycle
+    input [`TAG_WIDTH-1:0] predict_tag2_in, // tag on result bus 2 in next clock cycle    
 
     output reg        valid_out,            // An instruction is ready for output to next stage
     output reg [`CODE_ADDR_WIDTH-1:0] instruction_pointer_out, // address of current instruction
@@ -75,13 +77,13 @@ module register_read (
     output reg [1:0]  offset_field_out,     // address offset. 0: none, 1: 8 bit, possibly scaled, 2: 16 bit, 3: 32 bit
     output reg [1:0]  immediate_field_out,  // immediate data field. 0: none, 1: 8 bit, 2: 16 bit, 3: 32 or 64 bit
     output reg [1:0]  scale_factor_out,     // 00: index is not scaled, 01: index is scaled by operand size, 10: index is scaled by -1
-    output reg        index_limit_out,      // IM2 or IM3 contains a limit to the index
+    output reg        index_limit_out,      // IM4 or IM7 contains a limit to the index
 
     output reg [`RB:0] rd_val_out,          // value of register operand RD, bit `RB indicates missing 
     output reg [`RB:0] rs_val_out,          // value of register operand RS, bit `RB indicates missing 
     output reg [`RB:0] rt_val_out,          // value of register operand RT, bit `RB indicates missing 
     output reg [`RB:0] ru_val_out,          // value of register operand RU, bit `RB indicates missing 
-    output reg [`MASKSZ:0]  regmask_val_out,// value of mask register, bit 32 indicates missing
+    output reg [`MASKSZ:0] mask_val_out,    // value of mask register, bit 32 indicates missing
 
     output reg [1:0]   rd_status_out,       // uas of RD as input
     output reg [2:0]   rs_status_out,       // use of RS
@@ -135,8 +137,8 @@ reg         last_stall;                     // was stalled in last clock cycle. 
 always_comb begin
 // extract instruction fields, etc
     il   = instruction_in[`IL];
-    ot   = instruction_in[`OT];    
-    mask = instruction_in[`MASK]; 
+    ot   = instruction_in[`OT];
+    mask = instruction_in[`MASK];
     rd   = instruction_in[`RD];
     rs   = {(rs_status_in == `REG_SYSTEM), instruction_in[`RS]};
     rt   = instruction_in[`RT];
@@ -298,13 +300,21 @@ always_comb begin
     
     stall_predict = 0;
     // rs used as pointer or index or vector length and not available in next clock cycle:
-    if (rs_status_in >= `REG_POINTER && rs_val[`RB] && !mask_off) stall_predict = 1;
+    if (rs_status_in >= `REG_POINTER & rs_val[`RB] & !mask_off
+    & predict_tag1_in != rs_val[`TAG_WIDTH-1:0] & predict_tag2_in != rs_val[`TAG_WIDTH-1:0]) 
+        stall_predict = 1;
     // rt used as pointer and not available in next clock cycle:
-    if (rt_status_in >= `REG_POINTER && rt_val[`RB] && !mask_off) stall_predict = 1;
+    if (rt_status_in >= `REG_POINTER & rt_val[`RB] & !mask_off
+    & predict_tag1_in != rt_val[`TAG_WIDTH-1:0] & predict_tag2_in != rt_val[`TAG_WIDTH-1:0]) 
+        stall_predict = 1;
     // rd is written to memory and not available in next clock cycle: 
-    if (rd_status_in != 0 && result_type_in == `RESULT_MEM && rd_val[`RB] && !mask_off) stall_predict = 1;
+    if (rd_status_in != 0 && result_type_in == `RESULT_MEM && rd_val[`RB] && !mask_off
+    & predict_tag1_in != rd_val[`TAG_WIDTH-1:0] & predict_tag2_in != rd_val[`TAG_WIDTH-1:0]) 
+        stall_predict = 1;
     // mask value is needed for memory write
-    if (mask_used && result_type_in == `RESULT_MEM && mask_val[`MASKSZ]) stall_predict = 1;
+    if (mask_used && result_type_in == `RESULT_MEM && mask_val[`MASKSZ]
+    & predict_tag1_in != mask_val[`TAG_WIDTH-1:0] & predict_tag2_in != mask_val[`TAG_WIDTH-1:0]) 
+        stall_predict = 1;
 
     // signals for debugging    
     debug_bits = 0;
@@ -349,7 +359,7 @@ always_ff @(posedge clock) if (clock_enable && !stall_in) begin
     rs_val_out <= rs_val;                   // value of register operand RS, bit `RB indicates missing
     rt_val_out <= rt_val;                   // value of register operand RT, bit `RB indicates missing
     ru_val_out <= ru_val;                   // value of register operand RU, bit `RB indicates missing
-    regmask_val_out <= mask_val;            // value of mask register, bit 32 indicates missing
+    mask_val_out <= mask_val;            // value of mask register, bit 32 indicates missing
 
     // other outputs are unchanged from input
     instruction_pointer_out <= instruction_pointer_in;
@@ -373,7 +383,8 @@ always_ff @(posedge clock) if (clock_enable && !stall_in) begin
 end
 
 always_ff @(posedge clock) begin
-    debugport_out <= registers[debug_reada];// read register by debugger
+    //debugport_out <= registers[debug_reada];// read register by debugger
+    debugport_out <= {registers[debug_reada][`RB],registers[debug_reada][31:0]};// read register by debugger. bit 32 = status
 end
 
 endmodule

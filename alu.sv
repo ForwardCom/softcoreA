@@ -2,7 +2,7 @@
 // Engineer: Agner Fog
 // 
 // Create Date:   2020-06-06
-// Last modified: 2021-08-03
+// Last modified: 2022-12-25
 // Module Name: decoder
 // Project Name: ForwardCom soft core
 // Target Devices: Artix 7
@@ -20,7 +20,6 @@ module alu (
     input clock_enable,                     // clock enable. Used when single-stepping
     input reset,                            // system reset
     input valid_in,                         // data from previous stage ready
-    input stall_in,                         // pipeline is stalled
     
     input [`CODE_ADDR_WIDTH-1:0] instruction_pointer_in, // address of current instruction
     input [31:0] instruction_in,            // current instruction, only first word used here
@@ -32,8 +31,8 @@ module alu (
     input [6:0]  opx_in,                    // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
     input [5:0]  opj_in,                    // operation ID for conditional jump instructions
     input [2:0]  ot_in,                     // operand type
-    input [5:0]  option_bits_in,            // option bits from IM3 or mask
-    input [15:0] im2_bits_in,               // constant bits from IM2 as extra operand    
+    input [5:0]  option_bits_in,            // option bits from IM5 or mask
+    input [15:0] im4_bits_in,               // constant bits from IM4 as extra operand    
      
     // monitor result buses:
     input write_en1,                        // a result is written to writeport1
@@ -49,14 +48,14 @@ module alu (
     input [`RB:0] operand1_in,              // first register operand or fallback
     input [`RB:0] operand2_in,              // second register operand RS
     input [`RB:0] operand3_in,              // last register operand RT
-    input [`MASKSZ:0] regmask_val_in,       // mask register
+    input [`MASKSZ:0] mask_val_in,          // mask register
     input [`RB1:0] ram_data_in,             // memory operand from data ram
-    input        opr2_from_ram_in,          // value of operand 2 comes from data ram
-    input        opr3_from_ram_in,          // value of last operand comes from data ram    
-    input        opr1_used_in,              // operand1_in is needed
-    input        opr2_used_in,              // operand2_in is needed
-    input        opr3_used_in,              // operand3_in is needed
-    input        regmask_used_in,           // regmask_val_in is needed
+    input opr2_from_ram_in,                 // value of operand 2 comes from data ram
+    input opr3_from_ram_in,                 // value of last operand comes from data ram    
+    input opr1_used_in,                     // operand1_in is needed
+    input opr2_used_in,                     // operand2_in is needed
+    input opr3_used_in,                     // operand3_in is needed
+    input mask_used_in,                     // mask_val_in is needed
 
     output reg valid_out,                   // for debug display: alu is active
     output reg register_write_out, 
@@ -79,7 +78,7 @@ module alu (
 logic [`RB1:0] operand1;                    // first register operand RD or RU. bit `RB is 1 if invalid 
 logic [`RB1:0] operand2;                    // second register operand RS. bit `RB is 1 if invalid
 logic [`RB1:0] operand3;                    // last register operand RT. bit `RB is 1 if invalid
-logic [`MASKSZ:0] regmask_val;              // mask register
+logic [`MASKSZ:0] mask_val;                 // mask register
 logic [1:0]  otout;                         // operand type for output
 logic [5:0]  msb;                           // index to most significant bit
 logic signbit2, signbit3;                   // sign bits of operands
@@ -108,28 +107,28 @@ logic [`RB1:0] sizemask;                    // mask for operand type
 always_comb begin
     stall       = 0;
     stall_next  = 0;    
-    regmask_val = 0;
+    mask_val = 0;
     
     // get all inputs
-    if (regmask_val_in[`MASKSZ]) begin      // value missing
-        if (write_en1 && regmask_val_in[`TAG_WIDTH-1:0] == write_tag1_in) begin
-            regmask_val = writeport1_in;    // obtained from result bus 1 (which may be my own output)
-        end else if (write_en2 && regmask_val_in[`TAG_WIDTH-1:0] == write_tag2_in) begin
-            regmask_val = writeport2_in[(`MASKSZ-1):0]; // obtained from result bus 2
+    if (mask_val_in[`MASKSZ]) begin      // value missing
+        if (write_en1 && mask_val_in[`TAG_WIDTH-1:0] == write_tag1_in) begin
+            mask_val = writeport1_in;    // obtained from result bus 1 (which may be my own output)
+        end else if (write_en2 && mask_val_in[`TAG_WIDTH-1:0] == write_tag2_in) begin
+            mask_val = writeport2_in[(`MASKSZ-1):0]; // obtained from result bus 2
         end else begin
-            if (regmask_used_in) begin
+            if (mask_used_in) begin
                 stall = 1;                  // operand not ready
-                if (regmask_val_in[`TAG_WIDTH-1:0] != predict_tag1_in && regmask_val_in[`TAG_WIDTH-1:0] != predict_tag2_in) begin
+                if (mask_val_in[`TAG_WIDTH-1:0] != predict_tag1_in && mask_val_in[`TAG_WIDTH-1:0] != predict_tag2_in) begin
                     stall_next = 1;         // operand not ready in next clock cycle
                 end
             end                 
         end
     end else begin  // value available
-        regmask_val = regmask_val_in;
+        mask_val = mask_val_in;
     end
 
     // result is masked off
-    mask_off = regmask_used_in && regmask_val[`MASKSZ] == 0 && regmask_val[0] == 0 && !mask_alternative_in; 
+    mask_off = mask_used_in && mask_val[`MASKSZ] == 0 && mask_val[0] == 0 && !mask_alternative_in; 
     
     operand1 = 0;    
     if (operand1_in[`RB]) begin             // value missing
@@ -189,7 +188,7 @@ always_comb begin
         operand3 = operand3_in[`RB1:0];
     end
      
-    opx = opx_in;       // operation ID in execution unit. This is mostly equal to op1 for multiformat instructions
+    opx = opx_in;       // operation ID in execution unit
     opj = opj_in;       // operation ID for conditional jump
     result = 0;
     jump_result = 0;
@@ -281,12 +280,16 @@ always_comb begin
             if (|(operand2[1:0])) error_parm = 1; // jump to misaligned address
         end
         
-    end else if (opx == `II_COMPARE || (opx >= `II_MIN && opx <= `II_MAX_U)) begin
+    end else if (opx == `IX_INDIRECT_JUMP) begin
+        // jump address calculated below
+        if (|(operand3[1:0])) error_parm = 1;    // misaligned jump target        
+        
+    end else if (opx == `II_COMPARE || opx == `II_MIN || opx == `II_MAX) begin
         // instructions involving signed and unsigned compare. operation defined by option bits
         logic b1, b2, b3, eq, less;  // intermediate results
         logic [`RB1:0] sbit1;
         b1 = 0; b2 = 0; b3 = 0; eq = 0; less = 0;
-        // flip a 1 in the sign bit position if comparison is signed (option_bits_in[3] = 0)
+        // flip the sign bit if comparison is signed (option_bits_in[3] = 0)
         sbit1 = option_bits_in[3] ? `RB'b0 : sbit;            // sign bit if signed
         eq = (operand2 & sizemask) == (operand3 & sizemask);  // operands are equal
         less = ((operand2 & sizemask) ^ sbit1) < ((operand3 & sizemask) ^ sbit1); // a < b, signed or unsigned
@@ -309,23 +312,23 @@ always_comb begin
         
         // alternative use of mask
         case (option_bits_in[5:4])
-        2'b00: b3 = regmask_val[0] ? b2 : operand1[0];    // normal fallback
-        2'b01: b3 = regmask_val[0] & b2 & operand1[0];    // mask & result & fallback
-        2'b10: b3 = regmask_val[0] & (b2 | operand1[0]);  // mask & (result | fallback)
-        2'b11: b3 = regmask_val[0] & (b2 ^ operand1[0]);  // mask & (result ^ fallback)
+        2'b00: b3 = mask_val[0] ? b2 : operand1[0];    // normal fallback
+        2'b01: b3 = mask_val[0] & b2 & operand1[0];    // mask & result & fallback
+        2'b10: b3 = mask_val[0] & (b2 | operand1[0]);  // mask & (result | fallback)
+        2'b11: b3 = mask_val[0] & (b2 ^ operand1[0]);  // mask & (result ^ fallback)
         endcase
         
-        // copy remaining bits from mask
-        if (opx == `II_COMPARE && instruction_in[`MASK] != 3'b111) begin
-            result[`RB1:1] = regmask_val[(`MASKSZ-1):1];
-        end        
-        
-        if (opx >= `II_MIN) begin
-            // min and max instructions
-            result = b1 ? operand2 : operand3;
-        end else if (regmask_used_in | mask_alternative_in) begin
+        if (opx == `II_MIN) begin
+            if (option_bits_in[2] & !option_bits_in[3] & (signbit2 | signbit3)) result = 0; // return 0 if either operand is 0
+            else result = less ? operand2 : operand3;  // return smallest operand
+            
+        end else if (opx == `II_MAX) begin
+            result = less ? operand3 : operand2;       // return largest operand
+            
+        end else if (mask_used_in | mask_alternative_in) begin
             // combine result with rest of mask or NUMCONTR
-            result = {regmask_val[(`MASKSZ-1):1],b3};  // get remaining bits from mask
+            result = {mask_val[(`MASKSZ-1):1],b3};  // combine result with remaining bits from mask
+            
         end else begin
             // normal compare
             result = b3;
@@ -414,7 +417,7 @@ always_comb begin
         if (opx >= `II_TEST_BIT && opx <= `II_TEST_BITS_OR) begin
             // alternative use of mask and fallback in bit test instructions
             logic a, b, c;
-            a = regmask_val[0] ^ option_bits_in[4];    // mask bit flipped by option bit 4
+            a = mask_val[0] ^ option_bits_in[4];    // mask bit flipped by option bit 4
             b = rbit ^ option_bits_in[2];              // result bit flipped by option bit 2
             c = operand1[0] ^ option_bits_in[3];       // fallback bit flipped by option bit 3
             case (option_bits_in[1:0])                 // boolean operations controlled by option bits 1-0
@@ -424,7 +427,7 @@ always_comb begin
             2'b11: result[0] = a & (b ^ c);            // mask & (result ^ fallback)
             endcase
             if (option_bits_in[5]) begin               // copy remaining bits from mask or NUMCONTR
-                result[`RB1:1] = regmask_val[(`MASKSZ-1):1];
+                result[`RB1:1] = mask_val[(`MASKSZ-1):1];
             end
         end
      
@@ -527,7 +530,7 @@ always_comb begin
             // insert shift result in destination bit field
             integer i;
             for (i = 0; i < `RB; i++) begin
-                if (i >= im2_bits_in[13:8] && i <= option_bits_in) result[i] = barrel_out[i];
+                if (i >= im4_bits_in[13:8] && i <= option_bits_in) result[i] = barrel_out[i];
                 else result[i] = operand1[i];
             end
         
@@ -723,9 +726,9 @@ always_comb begin
     end else if (opx == `IX_TRUTH_TAB3) begin
         // truth_tab3 instruction
         // truth_table_lookup is in subfunctions.vh
-        result = truth_table_lookup(operand1, operand2, operand3, im2_bits_in[7:0]);
+        result = truth_table_lookup(operand1, operand2, operand3, im4_bits_in[7:0]);
         if (option_bits_in[0]) result[`RB1:1] = 0;   // output only bit 0
-        else if (option_bits_in[1]) result[`RB1:1] = regmask_val[(`MASKSZ-1):1]; // remaining bits from mask
+        else if (option_bits_in[1]) result[`RB1:1] = mask_val[(`MASKSZ-1):1]; // remaining bits from mask
 
     end else if (opx == `IX_INSERT_HI) begin    
         // insert constant into high 32 bits, leave low 32 bit unchanged
@@ -805,7 +808,7 @@ always_comb begin
             
         end        
         
-    end else if (opx == `II_NOP) begin
+    end else if (opx == `II_NOP | opx == `II_PREFETCH) begin
         // nop instruction. do nothing
 
     end else begin    
@@ -844,10 +847,10 @@ always_comb begin
     end
     
     // normal register output
-    // regmask_used_in removed from this equation because of critical timing:
-    normal_output = valid_in & ~stall & ~stall_in 
+    // mask_used_in removed from this equation because of critical timing:
+    normal_output = valid_in & ~stall 
     & (result_type == `RESULT_REG | result_type == `RESULT_SYS) 
-    & (regmask_val[0] | mask_alternative_in) & ~vector_in;
+    & (mask_val[0] | mask_alternative_in) & ~vector_in;
     
 end
 
@@ -862,20 +865,17 @@ always_ff @(posedge clock) if (clock_enable) begin
         2: result_out <= result[31:0];
         3: result_out <= result[`RB1:0];
         endcase
-        register_write_out <= ~reset;
-        tag_val_out <= tag_val_in;
+        register_write_out <= (tag_val_in != tag_val_out) & ~reset; // avoid repeating the same output
         // destination register number. high bit is 1 for system registers
         register_a_out <= {result_type[0],instruction_in[`RD]};
 
-    end else if (!valid_in || stall || stall_in || result_type == `RESULT_MEM || result_type == `RESULT_NONE || vector_in) begin
-        // stall_in must disable the output to avoid executing the same instruction twice.
+    end else if (!valid_in || stall || result_type == `RESULT_MEM || result_type == `RESULT_NONE || vector_in) begin
         // note: the FPGA has no internal tri-state buffers. We need to simulate result bus by or'ing outputs 
         register_write_out <= 0;
         result_out <= 0;
         register_a_out <= 0;
-        tag_val_out <= 0;
 
-    end else /*if (!regmask_val[0] && !mask_alternative_in) */ begin
+    end else begin
         // mask is zero. output is fallback
         case (otout)
         0: result_out <= operand1[7:0];
@@ -883,15 +883,16 @@ always_ff @(posedge clock) if (clock_enable) begin
         2: result_out <= operand1[31:0];
         3: result_out <= operand1[`RB1:0];
         endcase
-        register_write_out <= ~reset;
-        register_a_out <= {1'b0,instruction_in[`RD]};
-        tag_val_out <= tag_val_in;        
+        register_write_out <= (tag_val_in != tag_val_out) & ~reset; // avoid repeating the same output
+        register_a_out <= {1'b0,instruction_in[`RD]};        
     end 
     
-    if (stall || stall_in || !valid_in) begin
+    if (stall | !valid_in) tag_val_out <= 0;
+    else tag_val_out <= tag_val_in;   // output tag_val to release tag even if no register    
+    
+    if (stall || !valid_in) begin
         jump_out <= 0;
-        nojump_out <= 0;
-        
+        nojump_out <= 0;        
     end else if (category_in == `CAT_JUMP) begin
         // additional output for conditional jump instructions
         if (jump_not_taken | ~jump_taken) begin
@@ -902,18 +903,17 @@ always_ff @(posedge clock) if (clock_enable) begin
             jump_out <= valid_in && !reset;
             nojump_out <= 0;
         end
-        
     end else begin
         // not a jump instruction
         jump_out <= 0;
         nojump_out <= 0;
         jump_pointer_out <= 0;
     end
-
+    
     // special cases for indirect jumps
     if (opx == `IX_INDIRECT_JUMP) begin
         jump_pointer_out <= operand3[`RB1:2] - {1'b1,{(`CODE_ADDR_START-2){1'b0}}}; // jump target = (last operand - code memory start)/ 4
-        if (|(operand3[1:0])) error_parm_out <= 1;    // misaligned jump target
+        //if (|(operand3[1:0])) error_parm_out <= 1;    // misaligned jump target. handled above
         
     end else if (opx == `IX_RELATIVE_JUMP) begin      // jump target is calculated
         jump_pointer_out <= relative_jump_target;
@@ -922,12 +922,15 @@ always_ff @(posedge clock) if (clock_enable) begin
         jump_pointer_out <= operand1_in;              // jump target is calculated in previous stage
     end
 
+    // error outputs
+    error_out <= error & valid_in & !reset;           // unknown instruction   
+    error_parm_out <= error_parm & valid_in & !reset; // wrong parameter   
+
     // other outputs
     valid_out <= !stall & valid_in & !reset;          // a valid output is produced
     stall_out <= stall  & valid_in & !reset;          // stalled. waiting for operand
-    stall_next_out <= stall_next & valid_in & !reset; // predict stall in next clock cycle
-    error_out <= error & valid_in & !reset;           // unknown instruction   
-    error_parm_out <= error_parm & valid_in & !reset; // wrong parameter   
+    //stall_next_out <= stall_next & valid_in & !reset; // predict stall in next clock cycle
+    stall_next_out <= stall_next & valid_in & !reset & tag_val_in != tag_val_out; // predict stall in next clock cycle
 
 
     // outputs for debugger:
@@ -947,18 +950,16 @@ always_ff @(posedge clock) if (clock_enable) begin
     debug1_out[29]    <= jump_not_taken;
     debug1_out[30]    <= jump_result;
     debug1_out[31]    <= valid_in;    
+    
+    
     debug2_out[16]    <= opr1_used_in;     
     debug2_out[17]    <= opr2_used_in;     
     debug2_out[18]    <= opr3_used_in;     
-    debug2_out[19]    <= regmask_used_in;     
+    debug2_out[19]    <= mask_used_in;     
     debug2_out[20]    <= mask_alternative_in;     
     debug2_out[21]    <= mask_off;
-    /*
-    debug2_out[22]    <= regmask_val_in[0];
-    debug2_out[23]    <= regmask_val_in[`MASKSZ];     
-    debug2_out[27:24] <= regmask_val[3:0];     
-    debug2_out[28]    <= regmask_val[`MASKSZ];     
-    */
+
+    //debug2_out[31]    <= &instruction_in & ot_in[2] & &(im4_bits_in[15:14]); // prevent warnings for unused inputs
 end
 
 endmodule

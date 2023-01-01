@@ -2,7 +2,7 @@
 // Engineer:       Agner Fog
 // 
 // Create Date:    2020-06-06
-// Last modified:  2021-08-07
+// Last modified:  2022-12-29
 // Module Name:    defines.vh
 // Project Name:   ForwardCom soft core
 // Target Devices: Artix 7
@@ -11,11 +11,9 @@
 // Description:    Various global constants
 //////////////////////////////////////////////////////////////////////////////////
 
-// Important: Remember to set the clock frequency to the value in the config_.. file
 
-// Choose configuration:
-//`include "config_r32.vh"             // 32 bit registers, 32kB data RAM, 64 kB code RAM, 68 MHz
-`include "config_r64.vh"               // 64 bit registers, 32kB data RAM, 64 kB code RAM, 58 MHz
+// Choose configuration in the config_A.vh file
+`include "config_A.vh"                 // 32 or 64 bit registers, 32kB data RAM, 64 kB code RAM, 64 MHz
 
 
 `timescale 1ns / 1ps                   // set time scale for simulation
@@ -35,17 +33,19 @@
 `define RD     20:16                   // RD: destination operand field
 `define M      15                      // M bit extends mode field
 `define OT     15:13                   // operand type field, including M bit
+`define OT2    14:13                   // operand type field, not including M bit
 `define RS     12:8                    // RS: first source operand field
 `define MASK   7:5                     // mask field
 `define RT     4:0                     // RT: second source operand field
 `define MODE   29:27                   // mode field
 `define IM1    7:0                     // immediate field in format B, 8 bits
 `define IM1S   7                       // sign bit of IM1
-`define IM2E   47:32                   // immediate field 2 in format E, 16 bits
-`define IM2ES  47                      // sign bit of IM2E
-`define IM3E   53:48                   // immediate field 3 in format E, 6 bits
-`define IM3EX  55:48                   // immediate field 3 in format E, extended into OP2
-`define IM3EXS 55                      // sign bit of IM3EX
+`define IM4   47:32                   // immediate field 2 in format E, 16 bits
+`define IM4S  47                      // sign bit of IM4E
+`define IM5    53:48                   // immediate field 5 in format E, 6 bits
+`define IM5EX  55:48                   // immediate field 5 in format E, extended into OP2
+`define IM5EXS 55                      // sign bit of IM5EX
+
 `define OP2    55:54                   // op2 field in format E
 `define RU     60:56                   // RU: third source operand field in format E
 `define MODE2  63:61                   // mode2 field in format E
@@ -90,13 +90,13 @@
 // Values for address offset field
 `define OFFSET_NONE  0                 // no offset to pointer register
 `define OFFSET_1     1                 // 8 bit offset in IM1, scaled by operand size
-`define OFFSET_2     2                 // 16 bit offset in IM2, not scaled
-`define OFFSET_3     3                 // 24, 32, or 64 bit offset in IM2 or IM4, not scaled
+`define OFFSET_2     2                 // 16 bit offset in IM4, not scaled
+`define OFFSET_3     3                 // 24, 32, or 64 bit offset in IM6 or IM7, not scaled
 
 // Values for immediate operand field
 `define IMMED_NONE  0                  // no immediate operand
 `define IMMED_1     1                  // 8 bit immediate operand in IM1
-`define IMMED_2     2                  // 16 bit immediate operand in {IM2,IM1} for format C, or IM2 for format E
+`define IMMED_2     2                  // 16 bit immediate operand in {IM2,IM1} for format C, or IM4 for format E
 `define IMMED_3     3                  // 32 or 64 bit immediate operand
 
 // Values for result type
@@ -121,8 +121,10 @@
 `define II_NOP              0          // nop instruction
 `define II_MOVE             2          // move instruction
 `define II_STORE            1          // write to memory
+`define II_PREFETCH         3          // prefetch from memory (do nothing is there is no cache)
 `define II_SIGN_EXTEND      4          // sign_extend
 `define II_SIGN_EXTEND_ADD  5          // sign_extend_add
+`define II_COMPARE_FLOAT16  6          // compare, float16
 `define II_COMPARE          7          // compare
 `define II_ADD              8          // add
 `define II_SUB              9          // sub
@@ -133,12 +135,11 @@
 `define II_DIV             14          // div
 `define II_DIV_U           15          // div_u
 `define II_DIV_REV         16          // div_rev 
+`define II_DIV_REV_U       17          // div_rev_u
 `define II_REM             18          // rem
 `define II_REM_U           19          // rem_u
 `define II_MIN             20          // min
-`define II_MIN_U           21          // min_u
-`define II_MAX             22          // max
-`define II_MAX_U           23          // max_u
+`define II_MAX             21          // max
 `define II_AND             26          // and
 `define II_OR              27          // or
 `define II_XOR             28          // xor
@@ -156,7 +157,6 @@
 `define II_ADD_FLOAT16     44          // add float16
 `define II_SUB_FLOAT16     45          // sub float16
 `define II_MUL_FLOAT16     46          // mul float16
-`define II_MUL_ADD_FLOAT16 48          // mul_add float16
 `define II_MUL_ADD         49          // mul_add
 `define II_MUL_ADD2        50          // mul_add2
 `define II_ADD_ADD         51          // add_add
@@ -184,13 +184,13 @@
 `define II_COMPARE_FIRST   26          // first conditional jump instruction with no result register   
 `define II_COMPARE_LAST    47          // last conditional jump instruction with no result register   
 
-// Instructions with IM3 used for option bits in format E. Used in addressgenerator.sv
+// Instructions with IM5 used for option bits in format E. Used in addressgenerator.sv
 // II_COMPARE, II_SIGN_EXTEND_ADD, II_TEST_BIT, II_TEST_BITS_AND, II_TEST_BITS_OR,
-// II_DIV, II_DIV_REV, `II_DIV_U
+// II_DIV, II_DIV_REV, II_DIV_U, II_DIV_REV_U
 // II_MUL_ADD_FLOAT16, II_MUL_ADD, II_MUL_ADD2, II_ADD_ADD, 
 
 // Instructions with first and last operands swapped
-// II_SUB_REV, II_DIV_REV, II_MUL_ADD2 
+// II_SUB_REV, II_DIV_REV, II_DIV_REV_U, II_MUL_ADD2 
 
 
 // Instructions with half precision operands
@@ -227,6 +227,8 @@
 `define II_READ_PERFS18    37          // read_perfs = II_READ_PERF18 + 1
 `define II_READ_SYS18      38          // read_sys
 `define II_WRITE_SYS18     39          // write_sys
+`define II_PUSH18          56          // push
+`define II_POP18           57          // pop
 `define II_INPUT_18        62          // input instruction format 1.2 and 1.8
 `define II_OUTPUT_18       63          // output instruction format 1.2 and 1.8
 
@@ -235,7 +237,7 @@
 `define II2_MOVE_BITS       1          // move bits instruction op2, single format 2.X.7-0.1
 `define II_MASK_LENGTH      1          // mask length instruction op1, single format 2.2.7-1.1
 `define II2_MASK_LENGTH     1          // mask length instruction op2, single format 2.2.7-1.1
-`define II_TRUTH_TAB3       8          // truth_tab3 instruction op1, single format 2.0.6 or 2.2.6 - 8.1
+`define II_TRUTH_TAB3      48          // truth_tab3 instruction op1, single format 2.0.6 or 2.2.6 - 48.1
 `define II2_TRUTH_TAB3      1          // truth_tab3 op2
 
 // Format 2.6A
@@ -314,5 +316,7 @@
 `define IX_UNCOND_JUMP         90      // unconditional direct self-relative jump
 `define IX_INDIRECT_JUMP       91      // indirect jump to register or memory
 `define IX_RELATIVE_JUMP       92      // indirect jump with table of relative addresses
+`define IX_PUSH               100      // push instruction
+`define IX_POP                101      // pop instruction
 
  
